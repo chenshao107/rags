@@ -25,9 +25,34 @@ const bgeM3VectorSize = 1024
 func main() {
 	root := &cobra.Command{
 		Use:   "rags",
-		Short: "Local Semantic Index System",
-		Long: `rags is a local semantic index system that enables semantic search
-over your project files, powered by vector embeddings and Qdrant.`,
+		Short: "Local Semantic Index System — semantic search over your project files",
+		Long: `rags is a local-first CLI tool that adds semantic (meaning-based) search
+to your project files. It uses:
+
+  • Qdrant (vector database) — stores embeddings locally at http://localhost:6333
+  • SiliconFlow API — bge-m3 model for text embeddings, bge-reranker-v2-m3 for reranking
+
+== Quick Start ==
+
+  1. rags init        Create a .rags project and index all files
+  2. rags grep "..."   Search with natural language
+  3. rags update       Re-index after changing files
+
+== Configuration ==
+
+  Global:  ~/.rags/settings.yaml   (API keys, Qdrant URL, model names)
+           ~/.rags/projects.yaml   (registry of all initialized projects)
+  Local:   .rags/config.yaml       (project paths, exclude rules, chunk settings)
+           .rags/state.json        (file hash manifest for incremental updates)
+
+== How It Works ==
+
+  init:   walk files → chunk into paragraphs → embed with bge-m3 → upsert to Qdrant
+  grep:   embed query → Qdrant vector search (top50) → rerank (top10) → print top5
+  update: scan files → compare hashes → add/modify/delete chunks → cross-project GC
+
+  Searching is semantic — "后悔值兑换寿命" matches paragraphs about exchanging regret
+  points for lifespan, even when the exact words differ.`,
 	}
 
 	root.AddCommand(initCmd())
@@ -45,9 +70,24 @@ over your project files, powered by vector embeddings and Qdrant.`,
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Initialize rags in the current directory",
-		Long: `Creates .rags/config.yaml, registers the project, initializes a Qdrant
-collection, and performs the first full index.`,
+		Short: "Create a .rags project and perform the first full index",
+		Long: `Initialize rags in the current directory. This will:
+
+  1. Check/create ~/.rags/settings.yaml (interactive first-time setup for API key)
+  2. Create .rags/config.yaml with default chunk settings (800 chars, 150 overlap)
+  3. Create a Qdrant collection named rags_<project_name>
+  4. Register the project in ~/.rags/projects.yaml
+  5. Scan all text files, chunk into paragraphs, embed, and upsert to Qdrant
+  6. Write .rags/state.json with file hashes for future incremental updates
+
+Default exclude list: .git .rags node_modules __pycache__ .venv vendor .idea .vscode
+Edit .rags/config.yaml after init to customize paths and chunk settings.
+
+Examples:
+  rags init                          Initialize in current directory
+  rags init                          (first run: prompts for API key and settings)`,
+
+		Example: "  rags init",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -115,9 +155,23 @@ collection, and performs the first full index.`,
 func updateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
-		Short: "Incrementally update the index",
-		Long: `Scans for new, modified, and deleted files, updates the vector index
-accordingly, and runs cross-project garbage collection.`,
+		Short: "Incrementally sync the index with file changes",
+		Long: `Scan the project for file changes and update only what's needed:
+
+  1. Walk configured paths, compute SHA256 hash of each file
+  2. Compare against .rags/state.json to detect: new / modified / deleted files
+  3. Deleted files → delete all chunks from Qdrant by file_path filter
+  4. New & modified files → re-chunk, re-embed, upsert (file-level invalidation)
+  5. Update .rags/state.json with new hashes
+  6. Cross-project GC: check ~/.rags/projects.yaml, if any registered project
+     directory no longer exists, delete its Qdrant collection and unregister it
+
+  Only files that actually changed are re-indexed. Unchanged files are skipped.
+
+Examples:
+  rags update                        Update current project incrementally`,
+
+		Example: "  rags update",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -209,9 +263,29 @@ func grepCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "grep <query>",
-		Short: "Semantic search over indexed files",
-		Long:  `Embeds the query, searches the vector index, optionally re-ranks, and returns top results.`,
-		Args:  cobra.ExactArgs(1),
+		Short: "Semantic search — find files by meaning, not exact words",
+		Long: `Search indexed files using natural language. The pipeline:
+
+  1. Embed the query text with bge-m3 → 1024-dimensional vector
+  2. Qdrant cosine-similarity search → top 50 candidate chunks
+  3. SiliconFlow bge-reranker-v2-m3 reranks candidates → top 10
+  4. Return top N results (default 5)
+
+Output format: score, file path, line range, and chunk text preview.
+
+This is SEMANTIC search — "后悔值兑换寿命" matches paragraphs about
+exchanging regret for life, even when those exact words don't appear.
+
+Flags:
+  -n, --top int   Number of results to return (default 5, max 50)
+
+Examples:
+  rags grep "后悔值兑换寿命"          Search with default top 5
+  rags grep "主角的成长" -n 10        Return top 10 results`,
+
+		Example: `  rags grep "后悔值兑换寿命"
+  rags grep "主角的成长" -n 10`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			queryStr := args[0]
 
@@ -267,7 +341,16 @@ func grepCmd() *cobra.Command {
 func filesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "files",
-		Short: "List indexed files",
+		Short: "List all indexed files with their current hashes",
+		Long: `Read .rags/state.json and display every file tracked in the index.
+Shows relative path and the first 8 characters of the SHA256 hash.
+
+Use this to verify what's in the index, or before running rags update
+to see what will be checked.
+
+Example:
+  rags files                          List indexed files`,
+		Example: "  rags files",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -296,7 +379,20 @@ func filesCmd() *cobra.Command {
 func configCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "config",
-		Short: "Show current configuration",
+		Short: "Show current global and project configuration",
+		Long: `Display:
+
+  Global (~/.rags/settings.yaml):
+    • Qdrant URL, embedding model, rerank model
+    • API keys are masked (first 4 + last 4 characters)
+
+  Project (.rags/config.yaml, if in a rags project):
+    • Project name, scanned paths, exclude patterns
+    • Chunk size and overlap settings
+
+Examples:
+  rags config                         Show all configuration`,
+		Example: "  rags config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -344,7 +440,18 @@ func configCmd() *cobra.Command {
 func projectsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "projects",
-		Short: "List all registered projects",
+		Short: "List all registered rags projects and their status",
+		Long: `Read ~/.rags/projects.yaml and display every registered project.
+Shows project name, existence status (✓ or ✗ missing), collection name, and path.
+
+Projects are auto-registered on rags init and auto-removed by cross-project GC
+when their directories are deleted and another project runs rags update.
+
+Examples:
+  rags projects                       List all projects
+  rags projects                       (check which projects exist)
+  rags projects                       (find orphaned projects to clean up)`,
+		Example: "  rags projects",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			registry, err := config.LoadRegistry()
 			if err != nil {
