@@ -1,0 +1,452 @@
+很好，你这个已经不是“CLI小工具”了，而是一个**本地可控的 semantic index runtime（类 git + rg + RAG memory）**。我帮你把它设计成一套**可实现、可扩展、不会崩的架构**。
+
+我会按“产品级设计”给你拆：
+
+---
+
+# 🧠 一、rags 的目标定义（重新对齐）
+
+你这个工具的本质是：
+
+> **Local Semantic Index System（LSIS）**
+
+具备：
+
+* 多项目隔离
+* 增量索引
+* 可删除可重建
+* CLI 查询（rg-like）
+* 文件级可追溯（path + line）
+* 可插拔 embedding / rerank / db
+
+---
+
+# 🏗 二、整体架构（核心设计）
+
+```text id="arch_1"
+            ┌──────────────┐
+            │   rags CLI   │
+            └──────┬───────┘
+                   │
+        ┌──────────▼──────────┐
+        │   Core Engine        │
+        │  - indexer           │
+        │  - watcher           │
+        │  - query engine      │
+        └──────────┬──────────┘
+                   │
+   ┌───────────────┼────────────────┐
+   │               │                │
+   ▼               ▼                ▼
+Config         Embedding        Vector DB
+(.rags)        (硅基流动)        (Qdrant)
+   │               │                │
+   └───────────────┴────────────────┘
+                   │
+            File System
+```
+
+---
+
+# 📁 三、.rags 文件设计（核心）
+
+这是你系统的“控制平面”。
+
+建议结构：
+
+```yaml id="config_1"
+project: novel_a
+
+paths:
+  - ./novel
+  - ./notes
+
+exclude:
+  - .git
+  - node_modules
+
+db:
+  type: qdrant
+  url: http://localhost:6333
+  collection: rags_novel_a
+
+embedding:
+  provider: siliconflow
+  model: bge-m3
+  api_key: xxx
+
+rerank:
+  provider: siliconflow
+  model: bge-reranker-large
+
+index:
+  chunk_size: 800
+  overlap: 150
+
+features:
+  store_line_number: true
+  store_context_window: true
+```
+
+---
+
+# 🧩 四、核心数据模型（非常关键）
+
+每个 chunk 存入 Qdrant：
+
+```json id="point_schema"
+{
+  "id": "chunk_id",
+  "vector": [...],
+
+  "payload": {
+    "project": "novel_a",
+
+    "file_path": "novel/第15章.txt",
+    "file_hash": "abc123",
+
+    "start_line": 120,
+    "end_line": 145,
+
+    "chunk_index": 3,
+
+    "text": "后悔值结算：顾景修+4..."
+  }
+}
+```
+
+---
+
+# 🔁 五、rags init / update / grep 行为设计
+
+---
+
+# 🥇 1. rags init
+
+```bash id="init_1"
+rags init
+```
+
+做的事：
+
+* 创建 `.rags`
+* 初始化 Qdrant collection
+* 写入 config
+* 扫描目录（第一次 full index）
+
+---
+
+# 🔄 2. rags update（核心）
+
+```bash id="update_1"
+rags update
+```
+
+### 步骤：
+
+## Step 1：扫描文件系统
+
+```text id="scan"
+walk all files in paths
+```
+
+计算：
+
+```text id="hash"
+file_hash = hash(content)
+```
+
+---
+
+## Step 2：对比数据库状态
+
+Qdrant里存：
+
+```text id="db_state"
+file_path + file_hash
+```
+
+判断：
+
+| 状态      | 操作       |
+| ------- | -------- |
+| 新文件     | index    |
+| 修改文件    | re-index |
+| 未变化     | skip     |
+| ❌ 文件不存在 | delete   |
+
+---
+
+## Step 3：删除逻辑（你重点问的）
+
+### 如果文件消失：
+
+```python id="delete_1"
+client.delete(
+    filter={
+        "must": [
+            {"key": "file_path", "match": "xxx"}
+        ]
+    }
+)
+```
+
+👉 Qdrant 是支持 filter delete 的
+
+---
+
+## Step 4：更新索引
+
+* chunk
+* embed
+* upsert
+
+---
+
+# 🔍 3. rags grep（语义搜索）
+
+```bash id="grep_1"
+rags grep "后悔值兑换寿命"
+```
+
+流程：
+
+## Step 1：embedding query
+
+## Step 2：Qdrant search
+
+## Step 3：rerank（可选）
+
+## Step 4：返回结构化结果
+
+---
+
+# 📦 六、返回结果格式（你要求的关键点）
+
+必须支持：
+
+> ✔ 文件路径
+> ✔ 行号
+> ✔ chunk上下文
+
+---
+
+## 输出示例：
+
+```text id="result_1"
+[0.92] novel/第15章.txt:120-145
+后悔值结算规则：顾景修+4...
+
+[0.88] notes/时间线.md:33-40
+结算周期：每5章一次...
+
+[0.81] novel/人物卡.md:88-96
+系统能力：后悔值兑换寿命
+```
+
+---
+
+## line number 如何实现？
+
+chunking 时记录：
+
+```text id="line_1"
+start_line
+end_line
+```
+
+---
+
+# 🧠 七、增量更新（你最关心的部分）
+
+这是关键设计点，我直接给标准方案：
+
+---
+
+## ✔ 核心原则：file-level invalidation
+
+不要做 diff embedding（复杂且不稳定）
+
+---
+
+### 更新逻辑：
+
+```text id="update_logic"
+if file_hash changed:
+    delete all chunks of file
+    re-chunk
+    re-embed
+    upsert
+```
+
+---
+
+## ✔ 为什么这样是最优：
+
+* 简单
+* 稳定
+* 可恢复
+* 不会 chunk 错位
+
+---
+
+# 🧹 八、文件删除处理（你特别提的点）
+
+你说：
+
+> “扫描到文件不存在，要干净剔除”
+
+---
+
+## 实现：
+
+### Step 1：维护 manifest（推荐）
+
+`.rags/state.json`
+
+```json id="state"
+{
+  "novel/15.txt": "hash123",
+  "novel/16.txt": "hash456"
+}
+```
+
+---
+
+### Step 2：扫描差集
+
+```text id="diff"
+db_files - fs_files = deleted_files
+```
+
+---
+
+### Step 3：删除 vector DB
+
+```python id="delete_all"
+for file in deleted_files:
+    delete where file_path == file
+```
+
+---
+
+### Step 4：更新 state
+
+---
+
+# ⚙️ 九、硅基流动 API（embedding + rerank）
+
+你设计得很好，这里建议：
+
+---
+
+## embedding：
+
+```text id="embed"
+bge-m3
+```
+
+---
+
+## rerank：
+
+```text id="rerank"
+bge-reranker-large
+```
+
+---
+
+## pipeline：
+
+```text id="pipeline"
+query
+ → embed
+ → vector search top50
+ → rerank top10
+ → return top5
+```
+
+---
+
+# 🧩 十、完整 CLI 设计
+
+```bash id="cli_1"
+rags init
+
+rags update
+
+rags grep "xxx"
+
+rags files
+
+rags delete
+
+rags config
+```
+
+---
+
+# 🧠 十一、这个设计的本质价值
+
+你这个系统本质已经是：
+
+> 🔥 “local semantic filesystem”
+
+比：
+
+* grep
+* Cursor search
+* AnythingLLM
+
+都更“基础设施化”。
+
+---
+
+# ⚠️ 十二、唯一需要注意的坑
+
+我帮你提前踩掉：
+
+## ❌ 不要做：
+
+* diff级 embedding
+* chunk级 partial update
+* 多种 vector schema 混用
+
+---
+
+## ✔ 一定要：
+
+* file-level reindex
+* stable chunk_id
+* 强制 metadata（file_path + line range）
+
+---
+
+# 🚀 十三、最终总结（很重要）
+
+你的设计已经是：
+
+> ✔ CLI-first
+> ✔ local-first
+> ✔ incremental RAG
+> ✔ structured retrieval
+> ✔ multi-project safe
+
+---
+
+# 如果你下一步要做
+
+我可以帮你直接升级成：
+
+> 🔥 “rags v0.1 可运行实现（Python / Go）”
+
+包括：
+
+* 150~300行核心代码
+* Qdrant schema
+* watcher
+* CLI
+* embedding pipeline
+* rerank pipeline（可选）
+
+这个已经可以直接开 repo 了，不是设计阶段了。
