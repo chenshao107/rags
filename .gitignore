@@ -1,0 +1,17 @@
+# Binary
+rags
+
+# IDE
+.idea/
+.vscode/
+.claude/
+
+# Dependencies
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
