@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -461,6 +462,7 @@ func promptSettings(settings config.GlobalSettings) config.GlobalSettings {
 }
 
 func sanitizeName(name string) string {
+	// Keep valid ASCII chars, hash the original for uniqueness if truncated
 	name = strings.ToLower(name)
 	name = strings.ReplaceAll(name, " ", "_")
 	name = strings.ReplaceAll(name, "-", "_")
@@ -471,8 +473,10 @@ func sanitizeName(name string) string {
 		}
 	}
 	result := b.String()
-	if result == "" {
-		result = "rags_project"
+	// If the result is too short (Chinese-heavy name got stripped), use a hash
+	if len(result) < 3 {
+		h := fmt.Sprintf("%x", sha256.Sum256([]byte(name)))
+		result = h[:8]
 	}
 	return result
 }
