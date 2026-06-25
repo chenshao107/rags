@@ -260,10 +260,11 @@ Examples:
 
 func grepCmd() *cobra.Command {
 	var topK int
+	var keywords []string
 	var dedup, explore bool
 
 	cmd := &cobra.Command{
-		Use:   "grep <query>",
+		Use:   "grep [query]",
 		Short: "Semantic search — find files by meaning, not exact words",
 		Long: `Search indexed files using natural language. The pipeline:
 
@@ -277,24 +278,51 @@ Output format: score, file path, line range, and chunk text preview.
 This is SEMANTIC search — "后悔值兑换寿命" matches paragraphs about
 exchanging regret for life, even when those exact words don't appear.
 
+== Query Reformulation Tips ==
+
+Semantic search works best when you describe the MEANING, not exact terms.
+For complex searches, use -k to break the question into orthogonal aspects.
+Each keyword searches independently, then results are merged (best score wins).
+
+  ✅ Good:  rags grep "后悔值作为通用货币可以兑换寿命"
+            rags grep "主角通过任务获得的成长" -k "能力提升" -k "心境变化"
+            rags grep -k "系统规则" -k "任务机制" -k "奖励惩罚"
+  ❌ Bad:   rags grep "后悔值 + 寿命"            (use natural language, not operators)
+            rags grep "兑换"                      (too short, no semantic context)
+
 Flags:
-  -n, --top int      Number of results to return (default 5)
-  -d, --dedup        Only show best chunk per file (useful for overview)
-  -e, --explore      Show agent-friendly reading path with categories
+  -k, --keyword       Additional keyword to search (repeatable). Each keyword
+                      is embedded and searched independently, then merged.
+  -n, --top int       Number of results to return (default 5)
+  -d, --dedup         Only show best chunk per file (useful for overview)
+  -e, --explore       Show agent-friendly reading path with categories
 
 Examples:
-  rags grep "后悔值兑换寿命"             Top 5 results
-  rags grep "主角的成长" -n 10           Top 10 results
-  rags grep "系统规则" -d -n 8           Best chunk per file
-  rags grep "剧情走向" -e -n 10          Agent reading path`,
+  rags grep "后悔值兑换寿命"               Top 5 results
+  rags grep "主角的成长" -n 10             Top 10 results
+  rags grep "系统规则" -d -n 8             Best chunk per file
+  rags grep "剧情走向" -e -n 10            Agent reading path
+  rags grep "主角" -k "成长" -k "修炼"      Multi-keyword merged search
+  rags grep -k "系统规则" -k "任务机制"     Pure keyword search (no main query)`,
 
 		Example: `  rags grep "后悔值兑换寿命"
   rags grep "主角的成长" -n 10
   rags grep "系统规则" -d -n 8
-  rags grep "剧情走向" -e`,
-		Args: cobra.ExactArgs(1),
+  rags grep "剧情走向" -e
+  rags grep "主角" -k "成长" -k "修炼"
+  rags grep -k "系统规则" -k "任务机制"`,
+		Args: cobra.MinimumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			queryStr := args[0]
+			// Build query list: positional arg + -k flags
+			var queries []string
+			if len(args) > 0 && args[0] != "" {
+				queries = append(queries, args[0])
+			}
+			queries = append(queries, keywords...)
+
+			if len(queries) == 0 {
+				return fmt.Errorf("no query provided: use a positional query or -k flag(s)")
+			}
 
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -334,36 +362,48 @@ Examples:
 					fetchK = 50
 				}
 			}
-			results, err := searcher.Search(collectionName, pcfg.Name, queryStr, fetchK)
-			if err != nil {
-				return fmt.Errorf("search: %w", err)
+
+			// Search each query independently, then merge
+			var allResults []query.Result
+			displayQuery := queries[0] // for explore output header
+			for i, q := range queries {
+				results, err := searcher.Search(collectionName, pcfg.Name, q, fetchK)
+				if err != nil {
+					return fmt.Errorf("search %q: %w", q, err)
+				}
+				if i == 0 && len(queries) == 1 {
+					allResults = results
+				} else {
+					allResults = query.MergeResults(allResults, results)
+				}
 			}
 
-			if len(results) == 0 {
+			if len(allResults) == 0 {
 				fmt.Println("No results found.")
 				return nil
 			}
 
 			// Dedup first if requested
 			if dedup {
-				results = query.Dedup(results)
+				allResults = query.Dedup(allResults)
 			}
 
 			// Trim to requested count
-			if len(results) > topK {
-				results = results[:topK]
+			if len(allResults) > topK {
+				allResults = allResults[:topK]
 			}
 
 			if explore {
-				fmt.Print(query.FormatExplore(results, queryStr))
+				fmt.Print(query.FormatExplore(allResults, displayQuery))
 			} else {
-				fmt.Print(query.FormatResults(results))
+				fmt.Print(query.FormatResults(allResults))
 			}
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVarP(&topK, "top", "n", 5, "Number of top results to return")
+	cmd.Flags().StringArrayVarP(&keywords, "keyword", "k", nil, "Additional keyword to search (repeatable, merged with main query)")
 	cmd.Flags().BoolVarP(&dedup, "dedup", "d", false, "Only show best chunk per file")
 	cmd.Flags().BoolVarP(&explore, "explore", "e", false, "Show agent-friendly reading path with categories")
 	return cmd

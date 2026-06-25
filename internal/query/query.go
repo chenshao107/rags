@@ -97,6 +97,39 @@ func (s *Searcher) Search(collection, projectName, query string, topK int) ([]Re
 	return results, nil
 }
 
+// MergeResults merges multiple result sets, keeping the best score per chunk (by file+line)
+func MergeResults(sets ...[]Result) []Result {
+	best := make(map[string]Result) // key: "file:startLine:endLine"
+	for _, results := range sets {
+		for _, r := range results {
+			key := fmt.Sprintf("%s:%d:%d", r.FilePath, r.StartLine, r.EndLine)
+			if existing, ok := best[key]; !ok || r.Score > existing.Score {
+				best[key] = r
+			}
+		}
+	}
+
+	// Sort by score descending
+	type indexed struct {
+		r     Result
+		index int
+	}
+	var sorted []indexed
+	for _, r := range best {
+		sorted = append(sorted, indexed{r: r})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].r.Score > sorted[j].r.Score })
+	for i := range sorted {
+		sorted[i].index = i
+	}
+
+	out := make([]Result, len(sorted))
+	for i, s := range sorted {
+		out[i] = s.r
+	}
+	return out
+}
+
 // Dedup keeps only the highest-scoring result per file, preserving original order
 func Dedup(results []Result) []Result {
 	type best struct {
