@@ -298,10 +298,10 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 			})
 			chunkIdx++
 
-			// Start new chunk with overlap: keep last `overlap` chars
+			// Start new chunk with overlap: keep last `overlap` runes
 			prev := currentChunk.String()
 			if len(prev) > overlap {
-				prev = prev[len(prev)-overlap:]
+				prev = safeLastRunes(prev, overlap)
 			}
 			currentChunk.Reset()
 			if prev != "" {
@@ -356,6 +356,15 @@ func fileHash(path string) (string, error) {
 }
 
 var _ hash.Hash = sha256.New() // ensure import used
+
+// safeLastRunes returns the last n runes of s without breaking UTF-8 boundaries
+func safeLastRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
+}
 
 // chunkUUID generates a deterministic UUID from file path and chunk index
 func chunkUUID(filePath string, chunkIndex int) string {

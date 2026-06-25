@@ -260,6 +260,7 @@ Examples:
 
 func grepCmd() *cobra.Command {
 	var topK int
+	var dedup, explore bool
 
 	cmd := &cobra.Command{
 		Use:   "grep <query>",
@@ -277,14 +278,20 @@ This is SEMANTIC search — "后悔值兑换寿命" matches paragraphs about
 exchanging regret for life, even when those exact words don't appear.
 
 Flags:
-  -n, --top int   Number of results to return (default 5, max 50)
+  -n, --top int      Number of results to return (default 5)
+  -d, --dedup        Only show best chunk per file (useful for overview)
+  -e, --explore      Show agent-friendly reading path with categories
 
 Examples:
-  rags grep "后悔值兑换寿命"          Search with default top 5
-  rags grep "主角的成长" -n 10        Return top 10 results`,
+  rags grep "后悔值兑换寿命"             Top 5 results
+  rags grep "主角的成长" -n 10           Top 10 results
+  rags grep "系统规则" -d -n 8           Best chunk per file
+  rags grep "剧情走向" -e -n 10          Agent reading path`,
 
 		Example: `  rags grep "后悔值兑换寿命"
-  rags grep "主角的成长" -n 10`,
+  rags grep "主角的成长" -n 10
+  rags grep "系统规则" -d -n 8
+  rags grep "剧情走向" -e`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			queryStr := args[0]
@@ -319,7 +326,15 @@ Examples:
 			}
 
 			searcher := query.New(vdb, emb, rerank)
-			results, err := searcher.Search(collectionName, pcfg.Name, queryStr, topK)
+			// Fetch more results for dedup/explore to have enough across files
+			fetchK := topK
+			if dedup || explore {
+				fetchK = topK * 3
+				if fetchK > 50 {
+					fetchK = 50
+				}
+			}
+			results, err := searcher.Search(collectionName, pcfg.Name, queryStr, fetchK)
 			if err != nil {
 				return fmt.Errorf("search: %w", err)
 			}
@@ -329,12 +344,28 @@ Examples:
 				return nil
 			}
 
-			fmt.Print(query.FormatResults(results))
+			// Dedup first if requested
+			if dedup {
+				results = query.Dedup(results)
+			}
+
+			// Trim to requested count
+			if len(results) > topK {
+				results = results[:topK]
+			}
+
+			if explore {
+				fmt.Print(query.FormatExplore(results, queryStr))
+			} else {
+				fmt.Print(query.FormatResults(results))
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVarP(&topK, "top", "n", 5, "Number of top results to return")
+	cmd.Flags().BoolVarP(&dedup, "dedup", "d", false, "Only show best chunk per file")
+	cmd.Flags().BoolVarP(&explore, "explore", "e", false, "Show agent-friendly reading path with categories")
 	return cmd
 }
 
