@@ -118,36 +118,30 @@ func ComputeDiff(scanned []FileInfo, state config.ProjectState) (newFiles, modif
 
 // IndexFiles chunks and indexes a list of files
 func (idx *Indexer) IndexFiles(root string, collection string, projectName string, files []FileInfo, chunkSize, overlap int) error {
-	var allChunks []Chunk
-	var metaList []chunkMeta // tracks which file each chunk belongs to
+	total := len(files)
+	for i, f := range files {
+		fmt.Printf("  [%d/%d] %s\n", i+1, total, f.RelPath)
 
-	for _, f := range files {
 		chunks, err := ChunkFile(f.Path, f.RelPath, chunkSize, overlap)
 		if err != nil {
 			return fmt.Errorf("chunk %s: %w", f.RelPath, err)
 		}
-		for _, c := range chunks {
-			allChunks = append(allChunks, c)
-			metaList = append(metaList, chunkMeta{
-				RelPath:    f.RelPath,
-				FileHash:   f.Hash,
-				ChunkIndex: c.Index,
-				StartLine:  c.StartLine,
-				EndLine:    c.EndLine,
-			})
+		if len(chunks) == 0 {
+			continue
+		}
+
+		if err := idx.indexChunks(collection, projectName, f, chunks); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if len(allChunks) == 0 {
-		return nil
-	}
-
-	// Embed in batches of 32
+func (idx *Indexer) indexChunks(collection, projectName string, f FileInfo, chunks []Chunk) error {
 	batchSize := 32
-	for i := 0; i < len(allChunks); i += batchSize {
-		end := min(i+batchSize, len(allChunks))
-		batch := allChunks[i:end]
-		meta := metaList[i:end]
+	for i := 0; i < len(chunks); i += batchSize {
+		end := min(i+batchSize, len(chunks))
+		batch := chunks[i:end]
 
 		texts := make([]string, len(batch))
 		for j, c := range batch {
@@ -160,39 +154,39 @@ func (idx *Indexer) IndexFiles(root string, collection string, projectName strin
 
 		vectors, err := idx.Embedder.EmbedBatch(texts)
 		if err != nil {
-			return fmt.Errorf("embed batch [%d:%d]: %w", i, end, err)
+			return fmt.Errorf("embed %s batch [%d:%d]: %w", f.RelPath, i, end, err)
 		}
 
 		points := make([]vectordb.Point, len(batch))
 		for j, vec := range vectors {
-			m := meta[j]
-			chunkID := chunkUUID(m.RelPath, m.ChunkIndex)
+			c := batch[j]
+			chunkID := chunkUUID(f.RelPath, c.Index)
 			points[j] = vectordb.Point{
 				ID:     chunkID,
 				Vector: vec,
 				Payload: map[string]any{
-					"project":    projectName,
-					"file_path":  m.RelPath,
-					"file_hash":  m.FileHash,
-					"start_line": m.StartLine,
-					"end_line":   m.EndLine,
-					"chunk_index": m.ChunkIndex,
-					"text":       batch[j].Text,
+					"project":     projectName,
+					"file_path":   f.RelPath,
+					"file_hash":   f.Hash,
+					"start_line":  c.StartLine,
+					"end_line":    c.EndLine,
+					"chunk_index": c.Index,
+					"text":        c.Text,
 				},
 			}
 		}
 
 		if err := idx.VDB.Upsert(collection, points); err != nil {
-			return fmt.Errorf("upsert batch [%d:%d]: %w", i, end, err)
+			return fmt.Errorf("upsert %s batch [%d:%d]: %w", f.RelPath, i, end, err)
 		}
 	}
-
 	return nil
 }
 
 // DeleteFiles removes chunks for a list of file paths from the vector DB
 func (idx *Indexer) DeleteFiles(collection string, files []string) error {
 	for _, fp := range files {
+		fmt.Printf("  remove %s\n", fp)
 		if err := idx.VDB.DeleteByFilePath(collection, fp); err != nil {
 			return fmt.Errorf("delete %s: %w", fp, err)
 		}
@@ -210,15 +204,6 @@ func UpdateState(state config.ProjectState, scanned []FileInfo, deleted []string
 	// deleted files are simply not added
 	_ = deleted
 	return newState
-}
-
-// chunkMeta ties a chunk back to its source file
-type chunkMeta struct {
-	RelPath    string
-	FileHash   string
-	ChunkIndex int
-	StartLine  int
-	EndLine    int
 }
 
 // chunkPara is a paragraph with source line numbers for chunking
