@@ -12,10 +12,11 @@ import (
 
 // SearchOptions controls semantic search behavior.
 type SearchOptions struct {
-	Queries []string
-	TopK    int
-	Dedup   bool
-	Explore bool
+	Queries    []string
+	TopK       int
+	Dedup      bool
+	Explore    bool
+	PathPrefix string
 }
 
 // SearchResult holds formatted output from a search run.
@@ -59,7 +60,7 @@ func RunSearch(pcfg config.ProjectConfig, settings config.GlobalSettings, opts S
 	var allResults []query.Result
 	displayQuery := opts.Queries[0]
 	for i, q := range opts.Queries {
-		results, err := searcher.Search(collectionName, pcfg.Name, q, fetchK)
+		results, err := searcher.Search(collectionName, pcfg.Name, q, fetchK, opts.PathPrefix)
 		if err != nil {
 			return SearchResult{}, fmt.Errorf("search %q: %w", q, err)
 		}

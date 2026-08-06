@@ -32,7 +32,7 @@ func New(vdb *vectordb.Client, emb *embedder.Client, rerank *reranker.Client) *S
 }
 
 // Search runs the full pipeline: embed → search → optional rerank → top results
-func (s *Searcher) Search(collection, projectName, query string, topK int) ([]Result, error) {
+func (s *Searcher) Search(collection, projectName, query string, topK int, pathPrefix string) ([]Result, error) {
 	// Step 1: Embed query
 	vec, err := s.Embedder.Embed(query)
 	if err != nil {
@@ -45,7 +45,7 @@ func (s *Searcher) Search(collection, projectName, query string, topK int) ([]Re
 		searchLimit = topK
 	}
 
-	filter := vectordb.ProjectFilter(projectName)
+	filter := vectordb.SearchFilter(projectName, pathPrefix)
 	rawResults, err := s.VDB.Search(collection, vec, searchLimit, filter)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)

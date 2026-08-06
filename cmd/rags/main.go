@@ -210,8 +210,12 @@ Examples:
 				return fmt.Errorf("get current directory: %w", err)
 			}
 
-			// Load project config
-			pcfg, err := config.LoadProjectConfig(cwd)
+			projectRoot, _, err := resolveProjectContext(cwd)
+			if err != nil {
+				return err
+			}
+
+			pcfg, err := config.LoadProjectConfig(projectRoot)
 			if err != nil {
 				return fmt.Errorf("not a rags project (run 'rags init' first): %w", err)
 			}
@@ -234,7 +238,7 @@ Examples:
 			}
 
 			// Load current state
-			state, err := config.LoadProjectState(cwd)
+			state, err := config.LoadProjectState(projectRoot)
 			if err != nil {
 				return fmt.Errorf("load state: %w", err)
 			}
@@ -246,7 +250,7 @@ Examples:
 
 			// Scan files
 			fmt.Println("Scanning files...")
-			files, err := idx.ScanFiles(cwd, pcfg)
+			files, err := idx.ScanFiles(projectRoot, pcfg)
 			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
@@ -268,14 +272,14 @@ Examples:
 			toIndex := append(newFiles, modifiedFiles...)
 			if len(toIndex) > 0 {
 				fmt.Printf("Indexing %d files...\n", len(toIndex))
-				if err := idx.IndexFiles(cwd, collectionName, pcfg.Name, toIndex, pcfg.Index.ChunkSize, pcfg.Index.Overlap); err != nil {
+				if err := idx.IndexFiles(projectRoot, collectionName, pcfg.Name, toIndex, pcfg.Index.ChunkSize, pcfg.Index.Overlap); err != nil {
 					return fmt.Errorf("index files: %w", err)
 				}
 			}
 
 			// Update state
 			newState := indexer.UpdateState(state, files, deletedFiles)
-			if err := config.SaveProjectState(cwd, newState); err != nil {
+			if err := config.SaveProjectState(projectRoot, newState); err != nil {
 				return fmt.Errorf("save state: %w", err)
 			}
 
@@ -366,17 +370,23 @@ Examples:
 				return fmt.Errorf("get current directory: %w", err)
 			}
 
-			pcfg, err := config.LoadProjectConfig(cwd)
+			projectRoot, pathPrefix, err := resolveProjectContext(cwd)
+			if err != nil {
+				return err
+			}
+
+			pcfg, err := config.LoadProjectConfig(projectRoot)
 			if err != nil {
 				return fmt.Errorf("not a rags project: %w", err)
 			}
 
 			if pcfg.IsPublic() && pcfg.Public != nil {
 				output, err := client.RemoteSearch(pcfg.Public.Endpoint, client.SearchRequest{
-					Queries: queries,
-					TopK:    topK,
-					Dedup:   dedup,
-					Explore: explore,
+					Queries:    queries,
+					TopK:       topK,
+					Dedup:      dedup,
+					Explore:    explore,
+					PathPrefix: pathPrefix,
 				})
 				if err != nil {
 					return err
@@ -394,10 +404,11 @@ Examples:
 			}
 
 			result, err := app.RunSearch(pcfg, settings, app.SearchOptions{
-				Queries: queries,
-				TopK:    topK,
-				Dedup:   dedup,
-				Explore: explore,
+				Queries:    queries,
+				TopK:       topK,
+				Dedup:      dedup,
+				Explore:    explore,
+				PathPrefix: pathPrefix,
 			})
 			if err != nil {
 				return err
@@ -433,7 +444,12 @@ Example:
 				return fmt.Errorf("get current directory: %w", err)
 			}
 
-			state, err := config.LoadProjectState(cwd)
+			projectRoot, pathPrefix, err := resolveProjectContext(cwd)
+			if err != nil {
+				return err
+			}
+
+			state, err := config.LoadProjectState(projectRoot)
 			if err != nil {
 				return fmt.Errorf("not a rags project: %w", err)
 			}
@@ -443,10 +459,15 @@ Example:
 				return nil
 			}
 
+			count := 0
 			for path, hash := range state.Files {
+				if pathPrefix != "" && !strings.HasPrefix(path, pathPrefix) {
+					continue
+				}
 				fmt.Printf("  %s  (%s)\n", path, hash[:8])
+				count++
 			}
-			fmt.Printf("\nTotal: %d files\n", len(state.Files))
+			fmt.Printf("\nTotal: %d files\n", count)
 			return nil
 		},
 	}
@@ -494,10 +515,15 @@ Examples:
 			fmt.Println()
 
 			// Project config
-			if config.HasRagsProject(cwd) {
-				pcfg, err := config.LoadProjectConfig(cwd)
+			projectRoot, pathPrefix, err := resolveProjectContext(cwd)
+			if err == nil {
+				pcfg, err := config.LoadProjectConfig(projectRoot)
 				if err == nil {
 					fmt.Println("── Project (.rags/config.yaml) ──")
+					fmt.Printf("  Root:       %s\n", projectRoot)
+					if pathPrefix != "" {
+						fmt.Printf("  Scope:      %s\n", pathPrefix)
+					}
 					fmt.Printf("  Name:       %s\n", pcfg.Name)
 					fmt.Printf("  Mode:       %s\n", pcfg.Mode)
 					if pcfg.IsPublic() && pcfg.Public != nil {
@@ -558,6 +584,18 @@ Examples:
 			return nil
 		},
 	}
+}
+
+func resolveProjectContext(cwd string) (projectRoot string, pathPrefix string, err error) {
+	projectRoot, err = config.FindProjectRoot(cwd)
+	if err != nil {
+		return "", "", err
+	}
+	pathPrefix, err = config.SearchPathPrefix(projectRoot, cwd)
+	if err != nil {
+		return "", "", err
+	}
+	return projectRoot, pathPrefix, nil
 }
 
 func serveCmd() *cobra.Command {

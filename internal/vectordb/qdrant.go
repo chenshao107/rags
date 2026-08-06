@@ -63,7 +63,8 @@ type condition struct {
 }
 
 type matchValue struct {
-	Value string `json:"value"`
+	Value  string `json:"value,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // createCollectionRequest is the body for PUT /collections/{name}
@@ -122,7 +123,7 @@ func (c *Client) EnsureCollection(name string, vectorSize int) error {
 		return err
 	}
 	if exists {
-		return nil
+		return c.EnsurePayloadIndex(name, "file_path", true)
 	}
 
 	req := createCollectionRequest{
@@ -146,7 +147,40 @@ func (c *Client) EnsureCollection(name string, vectorSize int) error {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("create collection failed (%d): %s", resp.StatusCode, string(respBody))
 	}
-	return nil
+
+	return c.EnsurePayloadIndex(name, "file_path", true)
+}
+
+// EnsurePayloadIndex creates a payload field index if missing.
+func (c *Client) EnsurePayloadIndex(collection, fieldName string, prefix bool) error {
+	schema := map[string]any{
+		"type":   "keyword",
+		"prefix": prefix,
+	}
+	body, _ := json.Marshal(map[string]any{
+		"field_name":   fieldName,
+		"field_schema": schema,
+	})
+	url := fmt.Sprintf("%s/collections/%s/index", c.BaseURL, collection)
+	httpReq, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("create payload index: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Index may already exist — treat as success.
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		return nil
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	bodyStr := string(respBody)
+	if resp.StatusCode == http.StatusConflict || strings.Contains(bodyStr, "already exists") {
+		return nil
+	}
+	return fmt.Errorf("create payload index failed (%d): %s", resp.StatusCode, bodyStr)
 }
 
 // Upsert inserts or updates points
@@ -247,11 +281,21 @@ func (c *Client) DeleteCollection(name string) error {
 	return nil
 }
 
-// ProjectFilter creates a filter for a specific project
+// ProjectFilter creates a filter for a specific project.
 func ProjectFilter(projectName string) *filter {
-	return &filter{
-		Must: []condition{
-			{Key: "project", Match: matchValue{Value: projectName}},
-		},
+	return SearchFilter(projectName, "")
+}
+
+// SearchFilter creates a filter for project scope and optional file_path prefix.
+func SearchFilter(projectName, pathPrefix string) *filter {
+	must := []condition{
+		{Key: "project", Match: matchValue{Value: projectName}},
 	}
+	if pathPrefix != "" {
+		must = append(must, condition{
+			Key:   "file_path",
+			Match: matchValue{Prefix: pathPrefix},
+		})
+	}
+	return &filter{Must: must}
 }

@@ -18,10 +18,11 @@ const defaultTimeout = 60 * time.Second
 
 // SearchRequest is sent to a public rags server.
 type SearchRequest struct {
-	Queries []string `json:"queries"`
-	TopK    int      `json:"top_k"`
-	Dedup   bool     `json:"dedup"`
-	Explore bool     `json:"explore"`
+	Queries    []string `json:"queries"`
+	TopK       int      `json:"top_k"`
+	Dedup      bool     `json:"dedup"`
+	Explore    bool     `json:"explore"`
+	PathPrefix string   `json:"path_prefix,omitempty"`
 }
 
 // SearchResponse is returned by a public rags server.

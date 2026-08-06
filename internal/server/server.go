@@ -132,10 +132,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := app.RunSearch(s.Config, s.Settings, app.SearchOptions{
-		Queries: req.Queries,
-		TopK:    req.TopK,
-		Dedup:   req.Dedup,
-		Explore: req.Explore,
+		Queries:    req.Queries,
+		TopK:       req.TopK,
+		Dedup:      req.Dedup,
+		Explore:    req.Explore,
+		PathPrefix: req.PathPrefix,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, client.SearchResponse{Error: err.Error()})
