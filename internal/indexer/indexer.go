@@ -151,7 +151,11 @@ func (idx *Indexer) IndexFiles(root string, collection string, projectName strin
 
 		texts := make([]string, len(batch))
 		for j, c := range batch {
-			texts[j] = c.Text
+			t := strings.TrimSpace(c.Text)
+			if t == "" {
+				t = " "
+			}
+			texts[j] = t
 		}
 
 		vectors, err := idx.Embedder.EmbedBatch(texts)
@@ -217,6 +221,13 @@ type chunkMeta struct {
 	EndLine    int
 }
 
+// chunkPara is a paragraph with source line numbers for chunking
+type chunkPara struct {
+	text      string
+	startLine int
+	endLine   int
+}
+
 // ChunkFile splits a file into overlapping chunks by paragraphs
 func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error) {
 	data, err := os.ReadFile(absPath)
@@ -232,13 +243,7 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 	lines := strings.Split(text, "\n")
 
 	// Build line-numbered paragraphs
-	type para struct {
-		text      string
-		startLine int
-		endLine   int
-	}
-
-	var paragraphs []para
+	var paragraphs []chunkPara
 	currentPara := strings.Builder{}
 	paraStart := 1
 
@@ -249,7 +254,7 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 		if trimmed == "" {
 			// Empty line = paragraph boundary
 			if currentPara.Len() > 0 {
-				paragraphs = append(paragraphs, para{
+				paragraphs = append(paragraphs, chunkPara{
 					text:      strings.TrimSpace(currentPara.String()),
 					startLine: paraStart,
 					endLine:   lineNum - 1,
@@ -269,7 +274,7 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 
 	// Don't forget the last paragraph
 	if currentPara.Len() > 0 {
-		paragraphs = append(paragraphs, para{
+		paragraphs = append(paragraphs, chunkPara{
 			text:      strings.TrimSpace(currentPara.String()),
 			startLine: paraStart,
 			endLine:   len(lines),
@@ -279,6 +284,8 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 	if len(paragraphs) == 0 {
 		return nil, nil
 	}
+
+	paragraphs = splitLongParagraphs(paragraphs, chunkSize)
 
 	// Merge paragraphs into chunks of approximately chunkSize characters
 	var chunks []Chunk
@@ -327,6 +334,27 @@ func ChunkFile(absPath, relPath string, chunkSize, overlap int) ([]Chunk, error)
 	}
 
 	return chunks, nil
+}
+
+// splitLongParagraphs breaks paragraphs longer than chunkSize into smaller pieces
+func splitLongParagraphs(paragraphs []chunkPara, chunkSize int) []chunkPara {
+	var out []chunkPara
+	for _, p := range paragraphs {
+		runes := []rune(p.text)
+		if len(runes) <= chunkSize {
+			out = append(out, p)
+			continue
+		}
+		for i := 0; i < len(runes); i += chunkSize {
+			end := min(i+chunkSize, len(runes))
+			out = append(out, chunkPara{
+				text:      string(runes[i:end]),
+				startLine: p.startLine,
+				endLine:   p.endLine,
+			})
+		}
+	}
+	return out
 }
 
 // --- helpers ---

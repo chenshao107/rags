@@ -11,9 +11,10 @@ import (
 
 // ProjectConfig represents .rags/config.yaml
 type ProjectConfig struct {
-	Name    string      `yaml:"name"`
-	Mode    string      `yaml:"mode,omitempty"`
-	Paths   []string    `yaml:"paths"`
+	Name       string      `yaml:"name"`
+	Mode       string      `yaml:"mode,omitempty"`
+	Collection string      `yaml:"collection,omitempty"`
+	Paths      []string    `yaml:"paths"`
 	Exclude []string    `yaml:"exclude"`
 	Index   IndexConfig `yaml:"index"`
 	Public  *PublicMeta `yaml:"public,omitempty"`

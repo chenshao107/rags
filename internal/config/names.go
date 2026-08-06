@@ -26,7 +26,26 @@ func SanitizeName(name string) string {
 	return result
 }
 
-// CollectionName returns the default Qdrant collection for a project name.
+// PathHashSuffix returns a stable 8-hex-char suffix from an absolute path.
+func PathHashSuffix(absPath string) string {
+	clean := filepath.Clean(absPath)
+	h := sha256.Sum256([]byte(clean))
+	return fmt.Sprintf("%x", h[:4])
+}
+
+// CollectionNameForPath returns a unique Qdrant collection for a project path.
+// Format: rags_<sanitized_name>_<path_hash8>
+func CollectionNameForPath(absPath, name string) string {
+	suffix := SanitizeName(name)
+	hash := PathHashSuffix(absPath)
+	if suffix == "" {
+		return "rags_" + hash
+	}
+	return "rags_" + suffix + "_" + hash
+}
+
+// CollectionName returns the legacy Qdrant collection for a project name (basename only).
+// Prefer CollectionNameForPath or ResolveCollection for private projects.
 func CollectionName(name string) string {
 	return "rags_" + SanitizeName(name)
 }

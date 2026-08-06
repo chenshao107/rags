@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/chenshao/rags/internal/config"
+	"github.com/chenshao/rags/internal/project"
 	"github.com/chenshao/rags/internal/systemd"
 	"github.com/chenshao/rags/internal/vectordb"
 )
@@ -73,6 +74,9 @@ func Init(opts InitOptions) (string, error) {
 	meta := config.BuildPublicMeta(name, repoRoot, docsRoot, collectionName, settingsDir, config.PublicEndpoint(name), config.DeploySystemd)
 	pcfg.Public = &meta
 
+	if err := project.ReclaimResourcesForPath(repoRoot, collectionName, opts.VDB); err != nil {
+		return "", fmt.Errorf("reclaim previous resources: %w", err)
+	}
 	if err := opts.VDB.EnsureCollection(collectionName, 1024); err != nil {
 		return "", fmt.Errorf("create collection: %w", err)
 	}

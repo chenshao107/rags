@@ -12,11 +12,12 @@ import (
 
 // SearchOptions controls semantic search behavior.
 type SearchOptions struct {
-	Queries    []string
-	TopK       int
-	Dedup      bool
-	Explore    bool
-	PathPrefix string
+	ProjectRoot string
+	Queries     []string
+	TopK        int
+	Dedup       bool
+	Explore     bool
+	PathPrefix  string
 }
 
 // SearchResult holds formatted output from a search run.
@@ -35,9 +36,13 @@ func RunSearch(pcfg config.ProjectConfig, settings config.GlobalSettings, opts S
 		opts.TopK = 5
 	}
 
-	collectionName := config.CollectionName(pcfg.Name)
-	if pcfg.IsPublic() && pcfg.Public != nil && pcfg.Public.Collection != "" {
-		collectionName = pcfg.Public.Collection
+	if opts.ProjectRoot == "" {
+		return SearchResult{}, fmt.Errorf("project root is required")
+	}
+
+	collectionName, err := config.ResolveCollection(opts.ProjectRoot, pcfg)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("resolve collection: %w", err)
 	}
 
 	vdb := vectordb.NewClient(settings.Qdrant.URL)

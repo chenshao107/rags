@@ -105,6 +105,9 @@ Public mode (root only):
   .rags/config.yaml, installs a systemd service, and starts a read-only search server.
   Other users can run rags grep inside the repo, but cannot update the index.
 
+  Re-running init after deleting .rags automatically reclaims the previous Qdrant
+  collection for this path (no manual curl DELETE needed).
+
 Default exclude list: .git .rags node_modules __pycache__ .venv vendor .idea .vscode
 Edit .rags/config.yaml after init to customize paths and chunk settings.
 
@@ -156,19 +159,25 @@ Examples:
 			}
 
 			projectName := filepath.Base(cwd)
-			collectionName := config.CollectionName(projectName)
+			absCwd, _ := filepath.Abs(cwd)
+			collectionName := config.CollectionNameForPath(absCwd, projectName)
 
 			vdb := vectordb.NewClient(settings.Qdrant.URL)
+
+			if err := project.ReclaimResourcesForPath(absCwd, collectionName, vdb); err != nil {
+				return fmt.Errorf("reclaim previous resources: %w", err)
+			}
+
 			if err := vdb.EnsureCollection(collectionName, bgeM3VectorSize); err != nil {
 				return fmt.Errorf("create collection: %w", err)
 			}
 
 			pcfg := config.DefaultProjectConfig(projectName)
+			pcfg.Collection = collectionName
 			if err := config.SaveProjectConfig(cwd, pcfg); err != nil {
 				return fmt.Errorf("save project config: %w", err)
 			}
 
-			absCwd, _ := filepath.Abs(cwd)
 			if err := config.RegisterProject(config.ProjectEntry{
 				Name:       projectName,
 				Path:       absCwd,
@@ -244,9 +253,9 @@ Examples:
 				return fmt.Errorf("no API key configured. Run 'rags init' first or edit ~/.rags/settings.yaml")
 			}
 
-			collectionName := config.CollectionName(pcfg.Name)
-			if pcfg.IsPublic() && pcfg.Public != nil && pcfg.Public.Collection != "" {
-				collectionName = pcfg.Public.Collection
+			collectionName, err := config.ResolveCollection(projectRoot, pcfg)
+			if err != nil {
+				return fmt.Errorf("resolve collection: %w", err)
 			}
 
 			// Load current state
@@ -283,6 +292,14 @@ Examples:
 			// Index new files
 			toIndex := append(newFiles, modifiedFiles...)
 			if len(toIndex) > 0 {
+				if project.NeedsFullReindexReset(state, len(files), len(toIndex)) {
+					if err := project.ResetCollection(vdb, collectionName); err != nil {
+						return err
+					}
+				}
+				if err := vdb.EnsureCollection(collectionName, bgeM3VectorSize); err != nil {
+					return fmt.Errorf("ensure collection: %w", err)
+				}
 				fmt.Printf("Indexing %d files...\n", len(toIndex))
 				if err := idx.IndexFiles(projectRoot, collectionName, pcfg.Name, toIndex, pcfg.Index.ChunkSize, pcfg.Index.Overlap); err != nil {
 					return fmt.Errorf("index files: %w", err)
@@ -427,11 +444,12 @@ Examples:
 			}
 
 			result, err := app.RunSearch(pcfg, settings, app.SearchOptions{
-				Queries:    queries,
-				TopK:       topK,
-				Dedup:      dedup,
-				Explore:    explore,
-				PathPrefix: pathPrefix,
+				ProjectRoot: projectRoot,
+				Queries:     queries,
+				TopK:        topK,
+				Dedup:       dedup,
+				Explore:     explore,
+				PathPrefix:  pathPrefix,
 			})
 			if err != nil {
 				return err

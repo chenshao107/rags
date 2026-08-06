@@ -68,7 +68,6 @@ func ServerListenAddr(endpoint string) (network string, addr string, err error) 
 		return "", "", fmt.Errorf("unsupported endpoint scheme %q", u.Scheme)
 	}
 
-	host := u.Hostname()
 	port := u.Port()
 	if port == "" {
 		if u.Scheme == "https" {

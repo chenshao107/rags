@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // Client calls a SiliconFlow-compatible embedding API
@@ -35,7 +36,11 @@ func NewClient(baseURL, apiKey, model string) *Client {
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   model,
-		HTTP:    &http.Client{},
+		HTTP: &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+			},
+		},
 	}
 }
 
@@ -61,13 +66,30 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 	body, _ := json.Marshal(req)
 
 	url := c.BaseURL + "/embeddings"
-	httpReq, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	bodyReader := bytes.NewReader(body)
 
-	resp, err := c.HTTP.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("embed request: %w", err)
+	var resp *http.Response
+	for attempt := 0; attempt < 6; attempt++ {
+		httpReq, err := http.NewRequest(http.MethodPost, url, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+		resp, err = c.HTTP.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("embed request: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			wait := time.Duration(attempt+1) * 3 * time.Second
+			time.Sleep(wait)
+			bodyReader = bytes.NewReader(body)
+			continue
+		}
+		break
 	}
 	defer resp.Body.Close()
 
