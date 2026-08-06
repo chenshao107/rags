@@ -59,7 +59,7 @@ func (idx *Indexer) ScanFiles(root string, cfg config.ProjectConfig) ([]FileInfo
 				}
 				return nil
 			}
-			if !isTextFile(info.Name()) {
+			if !shouldIndexFile(path, info) {
 				return nil
 			}
 			if excludeSet[info.Name()] {
@@ -399,31 +399,4 @@ func chunkUUID(filePath string, chunkIndex int) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", filePath, chunkIndex)))
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
-}
-
-// isTextFile checks if a file extension suggests it's a text file
-func isTextFile(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	textExts := map[string]bool{
-		".txt": true, ".md": true, ".markdown": true,
-		".go": true, ".py": true, ".js": true, ".ts": true,
-		".jsx": true, ".tsx": true, ".vue": true, ".svelte": true,
-		".rs": true, ".c": true, ".h": true, ".cpp": true, ".hpp": true,
-		".java": true, ".kt": true, ".swift": true,
-		".rb": true, ".php": true, ".pl": true, ".sh": true, ".bash": true,
-		".yaml": true, ".yml": true, ".json": true, ".toml": true, ".ini": true,
-		".xml": true, ".html": true, ".css": true, ".scss": true, ".less": true,
-		".sql": true, ".graphql": true, ".proto": true,
-		".tex": true, ".rst": true, ".org": true,
-		".cfg": true, ".conf": true, ".env": true,
-		".log": true,
-	}
-	if textExts[ext] {
-		return true
-	}
-	// No extension = likely text (Makefile, Dockerfile, etc.)
-	if ext == "" || ext == name {
-		return true
-	}
-	return false
 }
