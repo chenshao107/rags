@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/chenshao/rags/internal/config"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -30,27 +32,31 @@ type SearchResponse struct {
 
 // RemoteSearch sends a search request to a public rags server endpoint.
 func RemoteSearch(endpoint string, req SearchRequest) (string, error) {
-	socketPath, err := parseUnixEndpoint(endpoint)
-	if err != nil {
-		return "", err
-	}
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultTimeout,
-		Transport: &http.Transport{
+	searchURL, err := config.ClientSearchURL(endpoint)
+	if err != nil {
+		return "", err
+	}
+
+	httpClient := &http.Client{Timeout: defaultTimeout}
+	if config.IsUnixEndpoint(endpoint) {
+		socketPath, err := config.UnixSocketPath(endpoint)
+		if err != nil {
+			return "", err
+		}
+		httpClient.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				d := net.Dialer{Timeout: 10 * time.Second}
 				return d.DialContext(ctx, "unix", socketPath)
 			},
-		},
+		}
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, "http://rags/search", bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, searchURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
@@ -79,15 +85,4 @@ func RemoteSearch(endpoint string, req SearchRequest) (string, error) {
 		return "", fmt.Errorf("%s", out.Error)
 	}
 	return out.Output, nil
-}
-
-func parseUnixEndpoint(endpoint string) (string, error) {
-	if !strings.HasPrefix(endpoint, "unix://") {
-		return "", fmt.Errorf("unsupported endpoint %q: only unix:// is supported", endpoint)
-	}
-	path := strings.TrimPrefix(endpoint, "unix://")
-	if path == "" {
-		return "", fmt.Errorf("empty unix socket path in endpoint %q", endpoint)
-	}
-	return path, nil
 }

@@ -70,7 +70,7 @@ func Init(opts InitOptions) (string, error) {
 	pcfg := config.DefaultProjectConfig(name)
 	pcfg.Mode = config.ModePublic
 	pcfg.Paths = paths
-	meta := config.BuildPublicMeta(name, repoRoot, docsRoot, collectionName, settingsDir)
+	meta := config.BuildPublicMeta(name, repoRoot, docsRoot, collectionName, settingsDir, config.PublicEndpoint(name), config.DeploySystemd)
 	pcfg.Public = &meta
 
 	if err := opts.VDB.EnsureCollection(collectionName, 1024); err != nil {

@@ -11,9 +11,15 @@ const (
 	ModePrivate = "private"
 	ModePublic  = "public"
 
+	DeploySystemd = "systemd"
+	DeployDocker  = "docker"
+
 	PublicRepoRoot = "/srv/rags"
 	PublicRunDir   = "/run/rags"
 	RootHome       = "/root"
+
+	DockerDocsRoot     = "/data/docs"
+	DockerSettingsDir  = "/etc/rags"
 )
 
 var publicNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -23,9 +29,10 @@ type PublicMeta struct {
 	RepoRoot    string `yaml:"repo_root"`
 	DocsRoot    string `yaml:"docs_root"`
 	Endpoint    string `yaml:"endpoint"`
-	Service     string `yaml:"service"`
+	Service     string `yaml:"service,omitempty"`
 	Collection  string `yaml:"collection"`
 	SettingsDir string `yaml:"settings_dir"`
+	Deploy      string `yaml:"deploy,omitempty"` // systemd or docker
 }
 
 // IsPublic reports whether the project is a shared public repository.
@@ -69,13 +76,17 @@ func PublicServiceName(name string) string {
 }
 
 // BuildPublicMeta constructs public metadata for a repository.
-func BuildPublicMeta(name, repoRoot, docsRoot, collection, settingsDir string) PublicMeta {
-	return PublicMeta{
+func BuildPublicMeta(name, repoRoot, docsRoot, collection, settingsDir, endpoint, deploy string) PublicMeta {
+	meta := PublicMeta{
 		RepoRoot:    repoRoot,
 		DocsRoot:    docsRoot,
-		Endpoint:    PublicEndpoint(name),
-		Service:     PublicServiceName(name),
+		Endpoint:    endpoint,
 		Collection:  collection,
 		SettingsDir: settingsDir,
+		Deploy:      deploy,
 	}
+	if deploy == DeploySystemd {
+		meta.Service = PublicServiceName(name)
+	}
+	return meta
 }

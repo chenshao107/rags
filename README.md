@@ -1,269 +1,115 @@
-# rags — Local Semantic Index System
+# rags
 
-> CLI-first, local-first semantic search for your project files. Think `grep` but powered by meaning, not exact words.
+本地语义检索 CLI。对项目文件建索引，用自然语言搜索（`grep` 的语义版）。
 
-`rags` indexes your text files into a vector database (Qdrant) using [SiliconFlow](https://siliconflow.cn)'s `bge-m3` embedding model, then lets you search by meaning — "后悔值兑换寿命" matches paragraphs about exchanging regret for lifespan, even when those exact words never appear.
+依赖：Qdrant、SiliconFlow API key（[siliconflow.cn](https://siliconflow.cn)）。
 
-## Architecture
-
-```
-            ┌──────────────┐
-            │   rags CLI   │
-            └──────┬───────┘
-                   │
-        ┌──────────▼──────────┐
-        │   Core Engine        │
-        │  - indexer           │
-        │  - watcher           │
-        │  - query engine      │
-        └──────────┬──────────┘
-                   │
-   ┌───────────────┼────────────────┐
-   │               │                │
-   ▼               ▼                ▼
-Config         Embedding        Vector DB
-~/.rags/       (SiliconFlow)    (Qdrant)
-               bge-m3
-               bge-reranker-v2-m3
-```
-
-## Quick Start
-
-### Prerequisites
-
-- **Go 1.23+** — to build from source
-- **Docker** — to run Qdrant (or an existing Qdrant instance)
-- **SiliconFlow API key** — get one at [siliconflow.cn](https://siliconflow.cn)
-
-### Install
+## 安装
 
 ```bash
-# Clone and build
 git clone git@github.com:chenshao107/rags.git
 cd rags
 go build -o rags ./cmd/rags/
-
-# Install to PATH
 mkdir -p ~/.local/bin && cp rags ~/.local/bin/
-echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
 ```
 
-### Start Qdrant
+## 命令
+
+| 命令 | 说明 |
+|------|------|
+| `rags init` | 初始化并全量索引 |
+| `rags update` | 增量更新索引 |
+| `rags grep <query>` | 语义搜索（`-n` 条数，`-k` 多关键词，`-d` 去重，`-e` explore） |
+| `rags files` | 列出已索引文件 |
+| `rags config` | 查看配置 |
+| `rags projects` | 列出已注册项目 |
+
+`rags --help` 查看各命令详情。
+
+---
+
+## 用法一：个人私有库
+
+适合：自己的项目/文档，本机开发和检索。
+
+**准备 Qdrant：**
 
 ```bash
 docker run -d --name qdrant -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant
 ```
 
-### Index your project
+**初始化（首次会交互配置 API key，写入 `~/.rags/settings.yaml`）：**
 
 ```bash
 cd ~/my-project
 rags init
 ```
 
-On first run, `rags` will prompt for your SiliconFlow API key and model preferences. These are saved to `~/.rags/settings.yaml` and reused across all projects.
-
-### Search
+**日常使用：**
 
 ```bash
-rags grep "后悔值兑换寿命"        # Top 5 results
-rags grep "主角的成长" -n 10      # Top 10 results
+rags grep "你的问题" -n 10
+rags update          # 文档变更后
 ```
 
-## Commands
+---
 
-| Command | Description |
-|---------|-------------|
-| `rags init` | Initialize a `.rags` project and perform full index |
-| `sudo rags init --public [--name NAME] [PATH]` | Create a shared public repo under `/srv/rags/<name>` and start systemd service |
-| `rags update` | Incrementally sync index with file changes + cross-project GC |
-| `rags grep <query>` | Semantic search (`-n` flag controls result count) |
-| `rags files` | List all indexed files with hashes |
-| `rags config` | Show global and project configuration |
-| `rags projects` | List all registered projects and their status |
+## 用法二：公共库（systemd）
 
-Run `rags --help` or `rags <command> --help` for detailed documentation.
+适合：编译服务器上共享文档，多人只读检索，维护者用 root 更新。
 
-## Public Repositories (Shared Search Server)
-
-For a shared compile server, you can publish a read-only semantic index that other users can search without their own API keys.
-
-### One-time setup (root)
-
-1. Configure SiliconFlow credentials for root:
+**一次性（root）：**
 
 ```bash
-sudo mkdir -p /root/.rags
-sudo rags init    # run once in any empty dir to create /root/.rags/settings.yaml interactively
-# or manually edit /root/.rags/settings.yaml
+# 配置 /root/.rags/settings.yaml（可先在空目录 sudo rags init 交互生成）
+sudo rags init --public --name bk7258-docs /path/to/docs
+# 或不指定 name：cd /path/to/docs && sudo rags init --public
 ```
 
-2. Create a public repository:
+**检索（任意能进入目录的用户，需本机安装 rags CLI）：**
 
 ```bash
-sudo rags init --public --name bk7258-docs /path/to/chip/docs
-# or
-cd /path/to/chip/docs && sudo rags init --public
-```
-
-This will:
-
-- Create `/srv/rags/<name>/` with `.rags/config.yaml`
-- Symlink docs if source path differs from `/srv/rags/<name>`
-- Write public metadata (repo root, socket, service, collection) into `.rags/config.yaml`
-- Install and start `rags-public@<name>.service` via systemd
-- Perform the first full index using `/root/.rags/settings.yaml`
-
-### Daily usage
-
-```bash
-# Anyone who can access the repo directory
 cd /srv/rags/bk7258-docs
-rags grep "BK7258 OTA 分区如何配置"
+rags grep "BK7258 OTA 分区"
+```
 
-# Only root can update the shared index
+**更新索引（仅 root）：**
+
+```bash
+cd /srv/rags/bk7258-docs
 sudo rags update
 ```
 
-Public repos use a unix socket at `/run/rags/<name>.sock`. Search requests are handled by the root-owned server; `rags update` is blocked for non-root users.
+---
 
-### Public `.rags/config.yaml` example
+## 用法三：Docker Compose
 
-```yaml
-name: bk7258-docs
-mode: public
-paths:
-  - ./docs
-exclude:
-  - .git
-  - .rags
-index:
-  chunk_size: 800
-  overlap: 150
-public:
-  repo_root: /srv/rags/bk7258-docs
-  docs_root: /srv/rags/bk7258-docs/docs
-  endpoint: unix:///run/rags/bk7258-docs.sock
-  service: rags-public@bk7258-docs
-  collection: rags_bk7258_docs
-  settings_dir: /root/.rags
+适合：不想配 root/systemd，一条 compose 拉起 Qdrant + 公共检索服务。
+
+```bash
+cd docker
+cp .env.example .env
+# 编辑 .env：DOCS_PATH、SILICONFLOW_API_KEY、RAGS_NAME、RAGS_PORT、RAGS_PUBLIC_HOST
+
+docker compose up -d --build
 ```
 
-## How It Works
+**检索（宿主机安装 rags CLI，进入 compose 持久化目录）：**
 
-### Search pipeline
-
-```
-query → embed (bge-m3, 1024-dim) → Qdrant search (top 50) → rerank (top 10) → print top N
-```
-
-### Indexing pipeline
-
-```
-walk files → compute hash → compare with state
-  ├─ new file      → chunk → embed → upsert
-  ├─ modified file → delete old chunks → re-chunk → re-embed → upsert
-  ├─ unchanged     → skip
-  └─ file deleted  → delete chunks from Qdrant
+```bash
+cd ./rags-state/bk7258-docs    # 对应 .env 里 RAGS_STATE
+rags grep "BK7258 OTA 分区"
 ```
 
-### Incremental update
+**更新索引：**
 
-File-level invalidation: if a file's SHA256 hash changes, all its chunks are replaced. No diff-level or chunk-level partial updates — simple, stable, and recoverable.
-
-### Cross-project GC
-
-Every `rags update` checks `~/.rags/projects.yaml`. If any registered project's directory has been deleted, its Qdrant collection is automatically removed and the entry is cleaned up.
-
-## Configuration
-
-### Global (`~/.rags/`)
-
-```yaml
-# ~/.rags/settings.yaml
-qdrant:
-  url: http://localhost:6333
-
-embedding:
-  provider: siliconflow
-  base_url: https://api.siliconflow.cn/v1
-  api_key: sk-xxx
-  model: BAAI/bge-m3
-
-rerank:
-  provider: siliconflow
-  base_url: https://api.siliconflow.cn/v1
-  api_key: sk-xxx
-  model: BAAI/bge-reranker-v2-m3
+```bash
+docker compose exec rags sh -c 'cd /srv/rags/$RAGS_NAME && rags update'
 ```
 
-`~/.rags/projects.yaml` tracks all initialized projects for cross-project GC.
+远程用户检索时，将 `.env` 中 `RAGS_PUBLIC_HOST` 设为服务器 IP。
 
-### Project-local (`.rags/`)
-
-```yaml
-# .rags/config.yaml
-name: my_project
-paths:
-  - ./
-exclude:
-  - .git
-  - node_modules
-  - vendor
-index:
-  chunk_size: 800
-  overlap: 150
-```
-
-```json
-// .rags/state.json — file hash manifest
-{
-  "doc/chapter1.txt": "abc123...",
-  "notes/ideas.md": "def456..."
-}
-```
-
-## Data Model
-
-Each text chunk is stored in Qdrant as:
-
-```json
-{
-  "id": "<uuid>",
-  "vector": [...],
-  "payload": {
-    "project": "my_project",
-    "file_path": "novel/第15章.txt",
-    "file_hash": "abc123...",
-    "start_line": 120,
-    "end_line": 145,
-    "chunk_index": 3,
-    "text": "后悔值结算：顾景修+4..."
-  }
-}
-```
-
-## Project Structure
-
-```
-rags/
-├── cmd/rags/main.go          # CLI entrypoint (cobra)
-├── internal/
-│   ├── app/                  # Shared search orchestration
-│   ├── client/               # Public server HTTP client (unix socket)
-│   ├── config/               # Config management (global + project + public)
-│   ├── embedder/             # SiliconFlow embedding client
-│   ├── reranker/             # SiliconFlow rerank client
-│   ├── vectordb/             # Qdrant REST API wrapper
-│   ├── indexer/              # File scanning, chunking, diff detection
-│   ├── query/                # Search pipeline orchestration
-│   ├── project/              # Project registry + cross-project GC
-│   ├── publicrepo/           # Public repository initialization
-│   ├── server/               # Public search server (unix socket)
-│   └── systemd/              # systemd unit installation
-├── go.mod
-└── go.sum
-```
+---
 
 ## License
 

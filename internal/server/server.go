@@ -18,10 +18,12 @@ const maxConcurrentSearches = 8
 
 // Server serves read-only search requests for a public rags repository.
 type Server struct {
-	RepoRoot string
-	Config   config.ProjectConfig
-	Settings config.GlobalSettings
-	Socket   string
+	RepoRoot  string
+	Config    config.ProjectConfig
+	Settings  config.GlobalSettings
+	Endpoint  string
+	network   string
+	listenAddr string
 
 	sem chan struct{}
 }
@@ -31,36 +33,45 @@ func New(repoRoot string, pcfg config.ProjectConfig, settings config.GlobalSetti
 	if !pcfg.IsPublic() || pcfg.Public == nil {
 		return nil, fmt.Errorf("not a public rags repository")
 	}
-	socket := config.PublicSocketPath(pcfg.Name)
-	if pcfg.Public.Endpoint != "" {
-		socketPath, err := parseUnixPath(pcfg.Public.Endpoint)
-		if err != nil {
-			return nil, err
-		}
-		socket = socketPath
+
+	endpoint := pcfg.Public.Endpoint
+	if endpoint == "" {
+		endpoint = config.PublicEndpoint(pcfg.Name)
 	}
+
+	network, listenAddr, err := config.ServerListenAddr(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
-		RepoRoot: repoRoot,
-		Config:   pcfg,
-		Settings: settings,
-		Socket:   socket,
-		sem:      make(chan struct{}, maxConcurrentSearches),
+		RepoRoot:   repoRoot,
+		Config:     pcfg,
+		Settings:   settings,
+		Endpoint:   endpoint,
+		network:    network,
+		listenAddr: listenAddr,
+		sem:        make(chan struct{}, maxConcurrentSearches),
 	}, nil
 }
 
-// Run starts the unix socket HTTP server until ctx is cancelled.
+// Run starts the HTTP server until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
-	if err := os.MkdirAll(config.PublicRunDir, 0755); err != nil {
-		return fmt.Errorf("create run dir: %w", err)
+	if s.network == "unix" {
+		if err := os.MkdirAll(config.PublicRunDir, 0755); err != nil {
+			return fmt.Errorf("create run dir: %w", err)
+		}
+		_ = os.Remove(s.listenAddr)
 	}
-	_ = os.Remove(s.Socket)
 
-	ln, err := net.Listen("unix", s.Socket)
+	ln, err := net.Listen(s.network, s.listenAddr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.Socket, err)
+		return fmt.Errorf("listen on %s %s: %w", s.network, s.listenAddr, err)
 	}
-	if err := os.Chmod(s.Socket, 0666); err != nil {
-		return fmt.Errorf("chmod socket: %w", err)
+	if s.network == "unix" {
+		if err := os.Chmod(s.listenAddr, 0666); err != nil {
+			return fmt.Errorf("chmod socket: %w", err)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -74,7 +85,7 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = httpServer.Close()
 	}()
 
-	fmt.Printf("rags public server listening on %s (repo: %s)\n", s.Socket, s.RepoRoot)
+	fmt.Printf("rags public server listening on %s (%s %s, repo: %s)\n", s.Endpoint, s.network, s.listenAddr, s.RepoRoot)
 	err = httpServer.Serve(ln)
 	if err != nil && err != http.ErrServerClosed {
 		return err
@@ -140,14 +151,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func parseUnixPath(endpoint string) (string, error) {
-	const prefix = "unix://"
-	if len(endpoint) < len(prefix) || endpoint[:len(prefix)] != prefix {
-		return "", fmt.Errorf("invalid unix endpoint: %s", endpoint)
-	}
-	return endpoint[len(prefix):], nil
-}
-
 // IsRoot reports whether the current process is running as root.
 func IsRoot() bool {
 	return os.Geteuid() == 0
@@ -155,7 +158,13 @@ func IsRoot() bool {
 
 // RequireRootForPublicWrite returns an error if a public repo write is attempted without root.
 func RequireRootForPublicWrite(pcfg config.ProjectConfig) error {
-	if pcfg.IsPublic() && !IsRoot() {
+	if !pcfg.IsPublic() {
+		return nil
+	}
+	if pcfg.Public != nil && pcfg.Public.Deploy == config.DeployDocker {
+		return nil
+	}
+	if !IsRoot() {
 		return fmt.Errorf("public repository %q is read-only; run with sudo to update", pcfg.Name)
 	}
 	return nil

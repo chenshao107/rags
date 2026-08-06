@@ -66,6 +66,7 @@ to your project files. It uses:
 	root.AddCommand(configCmd())
 	root.AddCommand(projectsCmd())
 	root.AddCommand(serveCmd())
+	root.AddCommand(dockerInitCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -564,11 +565,14 @@ func serveCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:    "serve",
-		Short:  "Run the public rags search server (used by systemd)",
+		Short:  "Run the public rags search server (systemd or Docker)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
-				return fmt.Errorf("--name is required")
+				name = os.Getenv("RAGS_NAME")
+			}
+			if name == "" {
+				return fmt.Errorf("--name or RAGS_NAME is required")
 			}
 
 			repoRoot := config.PublicRepoPath(name)
@@ -576,12 +580,12 @@ func serveCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load public repo config: %w", err)
 			}
-			settings, err := config.LoadRootSettings()
+			settings, err := loadSettingsForServe(pcfg)
 			if err != nil {
-				return fmt.Errorf("load root settings: %w", err)
+				return err
 			}
 			if settings.Embedding.APIKey == "" {
-				return fmt.Errorf("no API key in %s/settings.yaml", filepath.Join(config.RootHome, config.RagsDir))
+				return fmt.Errorf("no API key configured for serve")
 			}
 
 			srv, err := server.New(repoRoot, pcfg, settings)
@@ -597,6 +601,87 @@ func serveCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&name, "name", "", "Public repository name")
 	return cmd
+}
+
+func dockerInitCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "docker-init",
+		Short:  "Initialize a public repository for Docker Compose (internal)",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := os.Getenv("RAGS_NAME")
+			if name == "" {
+				return fmt.Errorf("RAGS_NAME is required")
+			}
+
+			port := 18787
+			if v := os.Getenv("RAGS_PORT"); v != "" {
+				p, err := parsePort(v)
+				if err != nil {
+					return fmt.Errorf("invalid RAGS_PORT: %w", err)
+				}
+				port = p
+			}
+
+			publicHost := os.Getenv("RAGS_PUBLIC_HOST")
+			if publicHost == "" {
+				publicHost = "127.0.0.1"
+			}
+
+			docsPath := os.Getenv("DOCS_PATH")
+			if docsPath == "" {
+				docsPath = config.DockerDocsRoot
+			}
+
+			settingsDir := os.Getenv("RAGS_SETTINGS_DIR")
+			if settingsDir == "" {
+				settingsDir = config.DockerSettingsDir
+			}
+
+			settings, err := config.WriteSettingsFromEnv(settingsDir)
+			if err != nil {
+				return err
+			}
+
+			vdb := vectordb.NewClient(settings.Qdrant.URL)
+			_, err = publicrepo.InitDocker(publicrepo.DockerInitOptions{
+				Name:        name,
+				DocsPath:    docsPath,
+				PublicHost:  publicHost,
+				Port:        port,
+				Settings:    settings,
+				SettingsDir: settingsDir,
+				VDB:         vdb,
+				IndexFn:     runFullIndex,
+			})
+			return err
+		},
+	}
+}
+
+func parsePort(s string) (int, error) {
+	var port int
+	_, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &port)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %q", s)
+	}
+	return port, nil
+}
+
+func loadSettingsForServe(pcfg config.ProjectConfig) (config.GlobalSettings, error) {
+	if dir := os.Getenv("RAGS_SETTINGS_DIR"); dir != "" {
+		return config.LoadSettingsFromDir(dir)
+	}
+	if pcfg.Public != nil && pcfg.Public.SettingsDir != "" {
+		settings, err := config.LoadSettingsFromDir(pcfg.Public.SettingsDir)
+		if err == nil && settings.Embedding.APIKey != "" {
+			return settings, nil
+		}
+	}
+	if pcfg.Public != nil && pcfg.Public.Deploy == config.DeployDocker {
+		return config.LoadSettingsFromDir(config.DockerSettingsDir)
+	}
+	return config.LoadRootSettings()
 }
 
 func resolveInitSourcePath(args []string) (string, error) {
@@ -622,7 +707,10 @@ func loadSettingsForPublicInit() (config.GlobalSettings, error) {
 }
 
 func loadSettingsForProject(pcfg config.ProjectConfig) (config.GlobalSettings, error) {
-	if pcfg.IsPublic() {
+	if pcfg.IsPublic() && pcfg.Public != nil {
+		if pcfg.Public.Deploy == config.DeployDocker && pcfg.Public.SettingsDir != "" {
+			return config.LoadSettingsFromDir(pcfg.Public.SettingsDir)
+		}
 		return config.LoadRootSettings()
 	}
 	return config.LoadSettings()
