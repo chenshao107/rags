@@ -42,6 +42,14 @@ to your project files. It uses:
   2. rags grep "..."   Search with natural language
   3. rags update       Re-index after changing files
 
+== Project discovery & directory scope ==
+
+  grep, update, files, and config walk up parent directories to find .rags.
+  You can run them from any subdirectory inside a project.
+
+  grep scopes search to the current directory (like rg): cd into a subfolder
+  to search only that folder and its children. Works for private and public repos.
+
 == Configuration ==
 
   Global:  ~/.rags/settings.yaml   (API keys, Qdrant URL, model names)
@@ -55,8 +63,8 @@ to your project files. It uses:
   grep:   embed query → Qdrant vector search (top50) → rerank (top10) → print top5
   update: scan files → compare hashes → add/modify/delete chunks → cross-project GC
 
-  Searching is semantic — "后悔值兑换寿命" matches paragraphs about exchanging regret
-  points for lifespan, even when the exact words differ.`,
+  Searching is semantic — "如何配置 OTA 分区" can match flash layout docs even
+  when those exact words never appear in the text.`,
 	}
 
 	root.AddCommand(initCmd())
@@ -200,8 +208,12 @@ func updateCmd() *cobra.Command {
 
   Only files that actually changed are re-indexed. Unchanged files are skipped.
 
+  Walks up to find .rags from the current directory. Update always covers
+  the whole project, not just the current subdirectory.
+
 Examples:
-  rags update                        Update current project incrementally`,
+  rags update                        Update current project incrementally
+  cd project/subdir && rags update   Same — updates the whole project`,
 
 		Example: "  rags update",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -316,8 +328,17 @@ func grepCmd() *cobra.Command {
 
 Output format: score, file path, line range, and chunk text preview.
 
-This is SEMANTIC search — "后悔值兑换寿命" matches paragraphs about
-exchanging regret for life, even when those exact words don't appear.
+== Directory scope ==
+
+  Walks up parent directories to find .rags — no need to cd to the project root.
+  Search is scoped to the current directory, like rg or grep in a tree:
+
+    cd project/              → search entire project
+    cd project/已完成/       → search only files under 已完成/
+
+  Works for private repos and public repos (remote search server).
+
+This is SEMANTIC search — ask in natural language; exact keywords are not required.
 
 == Query Reformulation Tips ==
 
@@ -325,11 +346,11 @@ Semantic search works best when you describe the MEANING, not exact terms.
 For complex searches, use -k to break the question into orthogonal aspects.
 Each keyword searches independently, then results are merged (best score wins).
 
-  ✅ Good:  rags grep "后悔值作为通用货币可以兑换寿命"
-            rags grep "主角通过任务获得的成长" -k "能力提升" -k "心境变化"
-            rags grep -k "系统规则" -k "任务机制" -k "奖励惩罚"
-  ❌ Bad:   rags grep "后悔值 + 寿命"            (use natural language, not operators)
-            rags grep "兑换"                      (too short, no semantic context)
+  ✅ Good:  rags grep "BK7258 如何进入 ATE 测试模式"
+            rags grep "哈基米是什么梗" -k "来源" -k "为什么火"
+            rags grep -k "GPIO 配置" -k "中断处理"
+  ❌ Bad:   rags grep "OTA + flash"              (use natural language, not operators)
+            rags grep "配置"                      (too short, no semantic context)
 
 Flags:
   -k, --keyword       Additional keyword to search (repeatable). Each keyword
@@ -339,19 +360,21 @@ Flags:
   -e, --explore       Show agent-friendly reading path with categories
 
 Examples:
-  rags grep "后悔值兑换寿命"               Top 5 results
-  rags grep "主角的成长" -n 10             Top 10 results
-  rags grep "系统规则" -d -n 8             Best chunk per file
-  rags grep "剧情走向" -e -n 10            Agent reading path
-  rags grep "主角" -k "成长" -k "修炼"      Multi-keyword merged search
-  rags grep -k "系统规则" -k "任务机制"     Pure keyword search (no main query)`,
+  rags grep "如何烧录固件"                 Top 5 results
+  rags grep "哈基米" -n 10                 Top 10 results
+  cd docs/api && rags grep "OTA 分区"      Search only under docs/api/
+  rags grep "启动流程" -d -n 8             Best chunk per file
+  rags grep "模块架构" -e -n 10            Agent reading path
+  rags grep "电源管理" -k "功耗" -k "休眠"  Multi-keyword merged search
+  rags grep -k "WiFi 配网" -k "BLE 配对"   Pure keyword search (no main query)`,
 
-		Example: `  rags grep "后悔值兑换寿命"
-  rags grep "主角的成长" -n 10
-  rags grep "系统规则" -d -n 8
-  rags grep "剧情走向" -e
-  rags grep "主角" -k "成长" -k "修炼"
-  rags grep -k "系统规则" -k "任务机制"`,
+		Example: `  rags grep "如何烧录固件"
+  rags grep "哈基米" -n 10
+  cd docs/api && rags grep "OTA 分区"
+  rags grep "启动流程" -d -n 8
+  rags grep "模块架构" -e
+  rags grep "电源管理" -k "功耗" -k "休眠"
+  rags grep -k "WiFi 配网" -k "BLE 配对"`,
 		Args: cobra.MinimumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Build query list: positional arg + -k flags
@@ -432,11 +455,15 @@ func filesCmd() *cobra.Command {
 		Long: `Read .rags/state.json and display every file tracked in the index.
 Shows relative path and the first 8 characters of the SHA256 hash.
 
+Walks up to find .rags. When run from a subdirectory, lists only files
+under the current directory (same scope rule as grep).
+
 Use this to verify what's in the index, or before running rags update
 to see what will be checked.
 
-Example:
-  rags files                          List indexed files`,
+Examples:
+  rags files                          List indexed files
+  cd project/已完成 && rags files     List files under 已完成/`,
 		Example: "  rags files",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -486,6 +513,9 @@ func configCmd() *cobra.Command {
   Project (.rags/config.yaml, if in a rags project):
     • Project name, scanned paths, exclude patterns
     • Chunk size and overlap settings
+    • Current search scope when run from a subdirectory
+
+  Walks up to find .rags from the current directory.
 
 Examples:
   rags config                         Show all configuration`,
