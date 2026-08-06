@@ -11,16 +11,18 @@ import (
 
 // Client calls a SiliconFlow-compatible embedding API
 type Client struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	HTTP    *http.Client
+	BaseURL    string
+	APIKey     string
+	Model      string
+	Dimensions int
+	HTTP       *http.Client
 }
 
 type embedRequest struct {
-	Model          string   `json:"model"`
+	Model          string `json:"model"`
 	Input          []string `json:"input"`
-	EncodingFormat string   `json:"encoding_format"`
+	EncodingFormat string `json:"encoding_format"`
+	Dimensions     int    `json:"dimensions,omitempty"`
 }
 
 type embedResponse struct {
@@ -31,11 +33,12 @@ type embedResponse struct {
 }
 
 // NewClient creates an embedding client
-func NewClient(baseURL, apiKey, model string) *Client {
+func NewClient(baseURL, apiKey, model string, dimensions int) *Client {
 	return &Client{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   model,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
+		Model:      model,
+		Dimensions: dimensions,
 		HTTP: &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
@@ -62,6 +65,9 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 		Model:          c.Model,
 		Input:          texts,
 		EncodingFormat: "float",
+	}
+	if c.Dimensions > 0 {
+		req.Dimensions = c.Dimensions
 	}
 	body, _ := json.Marshal(req)
 

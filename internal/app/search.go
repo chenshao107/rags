@@ -46,7 +46,7 @@ func RunSearch(pcfg config.ProjectConfig, settings config.GlobalSettings, opts S
 	}
 
 	vdb := vectordb.NewClient(settings.Qdrant.URL)
-	emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model)
+	emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, config.EmbeddingVectorSize(settings.Embedding))
 
 	var rr *reranker.Client
 	if settings.Rerank != nil && settings.Rerank.APIKey != "" {

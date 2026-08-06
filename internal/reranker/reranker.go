@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // Client calls a SiliconFlow-compatible rerank API
@@ -17,10 +18,11 @@ type Client struct {
 }
 
 type rerankRequest struct {
-	Model     string   `json:"model"`
-	Query     string   `json:"query"`
-	Documents []string `json:"documents"`
-	TopN      int      `json:"top_n,omitempty"`
+	Model       string   `json:"model"`
+	Query       string   `json:"query"`
+	Documents   []string `json:"documents"`
+	TopN        int      `json:"top_n,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
 }
 
 type rerankResponse struct {
@@ -53,6 +55,9 @@ func (c *Client) Rerank(query string, documents []string, topN int) ([]rerankRes
 		Query:     query,
 		Documents: documents,
 		TopN:      topN,
+	}
+	if strings.Contains(strings.ToLower(c.Model), "qwen3-reranker") {
+		req.Instruction = "Given a search query, retrieve relevant passages that answer the query."
 	}
 	body, _ := json.Marshal(req)
 

@@ -26,10 +26,11 @@ type QdrantConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Provider string `yaml:"provider"`
-	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"api_key"`
-	Model    string `yaml:"model"`
+	Provider   string `yaml:"provider"`
+	BaseURL    string `yaml:"base_url"`
+	APIKey     string `yaml:"api_key"`
+	Model      string `yaml:"model"`
+	Dimensions int    `yaml:"dimensions,omitempty"`
 }
 
 type RerankConfig struct {
@@ -51,6 +52,9 @@ type ProjectRegistry struct {
 	Projects []ProjectEntry `yaml:"projects"`
 }
 
+// DefaultRerankModel pairs with DefaultEmbeddingModel on SiliconFlow.
+const DefaultRerankModel = "Qwen/Qwen3-Reranker-8B"
+
 // DefaultSettings returns sensible defaults
 func DefaultSettings() GlobalSettings {
 	return GlobalSettings{
@@ -58,9 +62,10 @@ func DefaultSettings() GlobalSettings {
 			URL: "http://localhost:6333",
 		},
 		Embedding: EmbeddingConfig{
-			Provider: "siliconflow",
-			BaseURL:  "https://api.siliconflow.cn/v1",
-			Model:    "BAAI/bge-m3",
+			Provider:   "siliconflow",
+			BaseURL:    "https://api.siliconflow.cn/v1",
+			Model:      DefaultEmbeddingModel,
+			Dimensions: 4096,
 		},
 	}
 }

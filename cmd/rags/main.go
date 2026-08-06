@@ -23,9 +23,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// bge-m3 vector dimension
-const bgeM3VectorSize = 1024
-
 func main() {
 	root := &cobra.Command{
 		Use:   "rags",
@@ -168,7 +165,7 @@ Examples:
 				return fmt.Errorf("reclaim previous resources: %w", err)
 			}
 
-			if err := vdb.EnsureCollection(collectionName, bgeM3VectorSize); err != nil {
+			if err := vdb.EnsureCollection(collectionName, config.EmbeddingVectorSize(settings.Embedding)); err != nil {
 				return fmt.Errorf("create collection: %w", err)
 			}
 
@@ -266,7 +263,7 @@ Examples:
 
 			// Create clients
 			vdb := vectordb.NewClient(settings.Qdrant.URL)
-			emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model)
+			emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, config.EmbeddingVectorSize(settings.Embedding))
 			idx := indexer.New(vdb, emb)
 
 			// Scan files
@@ -297,7 +294,7 @@ Examples:
 						return err
 					}
 				}
-				if err := vdb.EnsureCollection(collectionName, bgeM3VectorSize); err != nil {
+				if err := vdb.EnsureCollection(collectionName, config.EmbeddingVectorSize(settings.Embedding)); err != nil {
 					return fmt.Errorf("ensure collection: %w", err)
 				}
 				fmt.Printf("Indexing %d files...\n", len(toIndex))
@@ -338,10 +335,9 @@ func grepCmd() *cobra.Command {
 		Short: "Semantic search — find files by meaning, not exact words",
 		Long: `Search indexed files using natural language. The pipeline:
 
-  1. Embed the query text with bge-m3 → 1024-dimensional vector
+  1. Embed the query with the configured embedding model (default Qwen3-Embedding-8B)
   2. Qdrant cosine-similarity search → top 50 candidate chunks
-  3. SiliconFlow bge-reranker-v2-m3 reranks candidates → top 10
-  4. Return top N results (default 5)
+  3. Optional reranker (default bge-reranker-v2-m3) → refined top results
 
 Output format: score, file path, line range, and chunk text preview.
 
@@ -553,6 +549,7 @@ Examples:
 			fmt.Println("── Global (~/.rags/settings.yaml) ──")
 			fmt.Printf("  Qdrant URL:       %s\n", settings.Qdrant.URL)
 			fmt.Printf("  Embedding model:  %s\n", settings.Embedding.Model)
+			fmt.Printf("  Vector dimension: %d\n", config.EmbeddingVectorSize(settings.Embedding))
 			fmt.Printf("  Embedding API:    %s\n", maskKey(settings.Embedding.APIKey))
 			if settings.Rerank != nil {
 				fmt.Printf("  Rerank model:     %s\n", settings.Rerank.Model)
@@ -805,7 +802,7 @@ func loadSettingsForProject(pcfg config.ProjectConfig) (config.GlobalSettings, e
 // --- helpers ---
 
 func runFullIndex(cwd string, pcfg config.ProjectConfig, collection string, settings *config.GlobalSettings, vdb *vectordb.Client) error {
-	emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model)
+	emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, config.EmbeddingVectorSize(settings.Embedding))
 	idx := indexer.New(vdb, emb)
 
 	files, err := idx.ScanFiles(cwd, pcfg)
@@ -880,7 +877,7 @@ func promptSettings(settings config.GlobalSettings) config.GlobalSettings {
 			Provider: "siliconflow",
 			BaseURL:  settings.Embedding.BaseURL,
 			APIKey:   settings.Embedding.APIKey,
-			Model:    "BAAI/bge-reranker-v2-m3",
+			Model:    config.DefaultRerankModel,
 		}
 		fmt.Printf("Rerank model [%s]: ", rr.Model)
 		input, _ = reader.ReadString('\n')

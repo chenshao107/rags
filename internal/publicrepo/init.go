@@ -77,7 +77,7 @@ func Init(opts InitOptions) (string, error) {
 	if err := project.ReclaimResourcesForPath(repoRoot, collectionName, opts.VDB); err != nil {
 		return "", fmt.Errorf("reclaim previous resources: %w", err)
 	}
-	if err := opts.VDB.EnsureCollection(collectionName, 1024); err != nil {
+	if err := opts.VDB.EnsureCollection(collectionName, config.EmbeddingVectorSize(opts.Settings.Embedding)); err != nil {
 		return "", fmt.Errorf("create collection: %w", err)
 	}
 	if err := config.SaveProjectConfig(repoRoot, pcfg); err != nil {

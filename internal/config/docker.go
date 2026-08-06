@@ -21,6 +21,11 @@ func WriteSettingsFromEnv(dir string) (GlobalSettings, error) {
 	if v := os.Getenv("EMBEDDING_MODEL"); v != "" {
 		settings.Embedding.Model = v
 	}
+	if v := os.Getenv("EMBEDDING_DIMENSIONS"); v != "" {
+		if n, err := parseEnvInt(v); err == nil && n > 0 {
+			settings.Embedding.Dimensions = n
+		}
+	}
 	if v := os.Getenv("SILICONFLOW_API_KEY"); v != "" {
 		settings.Embedding.APIKey = v
 	}
@@ -31,7 +36,7 @@ func WriteSettingsFromEnv(dir string) (GlobalSettings, error) {
 
 	rerankModel := os.Getenv("RERANK_MODEL")
 	if rerankModel == "" {
-		rerankModel = "BAAI/bge-reranker-v2-m3"
+		rerankModel = DefaultRerankModel
 	}
 	settings.Rerank = &RerankConfig{
 		Provider: "siliconflow",

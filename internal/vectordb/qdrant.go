@@ -115,8 +115,8 @@ func (c *Client) CollectionExists(name string) (bool, error) {
 	return false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 }
 
-// EnsureCollection creates a collection if it doesn't exist
-// For bge-m3, the vector dimension is 1024
+// EnsureCollection creates a collection if it doesn't exist.
+// vectorSize must match the embedding model output dimension.
 func (c *Client) EnsureCollection(name string, vectorSize int) error {
 	exists, err := c.CollectionExists(name)
 	if err != nil {
