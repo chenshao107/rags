@@ -75,6 +75,7 @@ rags grep "主角的成长" -n 10      # Top 10 results
 | Command | Description |
 |---------|-------------|
 | `rags init` | Initialize a `.rags` project and perform full index |
+| `sudo rags init --public [--name NAME] [PATH]` | Create a shared public repo under `/srv/rags/<name>` and start systemd service |
 | `rags update` | Incrementally sync index with file changes + cross-project GC |
 | `rags grep <query>` | Semantic search (`-n` flag controls result count) |
 | `rags files` | List all indexed files with hashes |
@@ -82,6 +83,71 @@ rags grep "主角的成长" -n 10      # Top 10 results
 | `rags projects` | List all registered projects and their status |
 
 Run `rags --help` or `rags <command> --help` for detailed documentation.
+
+## Public Repositories (Shared Search Server)
+
+For a shared compile server, you can publish a read-only semantic index that other users can search without their own API keys.
+
+### One-time setup (root)
+
+1. Configure SiliconFlow credentials for root:
+
+```bash
+sudo mkdir -p /root/.rags
+sudo rags init    # run once in any empty dir to create /root/.rags/settings.yaml interactively
+# or manually edit /root/.rags/settings.yaml
+```
+
+2. Create a public repository:
+
+```bash
+sudo rags init --public --name bk7258-docs /path/to/chip/docs
+# or
+cd /path/to/chip/docs && sudo rags init --public
+```
+
+This will:
+
+- Create `/srv/rags/<name>/` with `.rags/config.yaml`
+- Symlink docs if source path differs from `/srv/rags/<name>`
+- Write public metadata (repo root, socket, service, collection) into `.rags/config.yaml`
+- Install and start `rags-public@<name>.service` via systemd
+- Perform the first full index using `/root/.rags/settings.yaml`
+
+### Daily usage
+
+```bash
+# Anyone who can access the repo directory
+cd /srv/rags/bk7258-docs
+rags grep "BK7258 OTA 分区如何配置"
+
+# Only root can update the shared index
+sudo rags update
+```
+
+Public repos use a unix socket at `/run/rags/<name>.sock`. Search requests are handled by the root-owned server; `rags update` is blocked for non-root users.
+
+### Public `.rags/config.yaml` example
+
+```yaml
+name: bk7258-docs
+mode: public
+paths:
+  - ./docs
+exclude:
+  - .git
+  - .rags
+index:
+  chunk_size: 800
+  overlap: 150
+public:
+  repo_root: /srv/rags/bk7258-docs
+  docs_root: /srv/rags/bk7258-docs/docs
+  endpoint: unix:///run/rags/bk7258-docs.sock
+  service: rags-public@bk7258-docs
+  collection: rags_bk7258_docs
+  settings_dir: /root/.rags
+```
 
 ## How It Works
 
@@ -183,13 +249,18 @@ Each text chunk is stored in Qdrant as:
 rags/
 ├── cmd/rags/main.go          # CLI entrypoint (cobra)
 ├── internal/
-│   ├── config/               # Config management (global + project)
+│   ├── app/                  # Shared search orchestration
+│   ├── client/               # Public server HTTP client (unix socket)
+│   ├── config/               # Config management (global + project + public)
 │   ├── embedder/             # SiliconFlow embedding client
 │   ├── reranker/             # SiliconFlow rerank client
 │   ├── vectordb/             # Qdrant REST API wrapper
 │   ├── indexer/              # File scanning, chunking, diff detection
 │   ├── query/                # Search pipeline orchestration
-│   └── project/              # Project registry + cross-project GC
+│   ├── project/              # Project registry + cross-project GC
+│   ├── publicrepo/           # Public repository initialization
+│   ├── server/               # Public search server (unix socket)
+│   └── systemd/              # systemd unit installation
 ├── go.mod
 └── go.sum
 ```

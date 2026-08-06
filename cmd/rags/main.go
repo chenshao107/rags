@@ -2,18 +2,22 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha256"
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
+	"github.com/chenshao/rags/internal/app"
+	"github.com/chenshao/rags/internal/client"
 	"github.com/chenshao/rags/internal/config"
 	"github.com/chenshao/rags/internal/embedder"
 	"github.com/chenshao/rags/internal/indexer"
 	"github.com/chenshao/rags/internal/project"
-	"github.com/chenshao/rags/internal/query"
-	"github.com/chenshao/rags/internal/reranker"
+	"github.com/chenshao/rags/internal/publicrepo"
+	"github.com/chenshao/rags/internal/server"
 	"github.com/chenshao/rags/internal/vectordb"
 
 	"github.com/spf13/cobra"
@@ -61,6 +65,7 @@ to your project files. It uses:
 	root.AddCommand(filesCmd())
 	root.AddCommand(configCmd())
 	root.AddCommand(projectsCmd())
+	root.AddCommand(serveCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -68,10 +73,13 @@ to your project files. It uses:
 }
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "init",
+	var public bool
+	var publicName string
+
+	cmd := &cobra.Command{
+		Use:   "init [PATH]",
 		Short: "Create a .rags project and perform the first full index",
-		Long: `Initialize rags in the current directory. This will:
+		Long: `Initialize rags in the current directory or PATH. This will:
 
   1. Check/create ~/.rags/settings.yaml (interactive first-time setup for API key)
   2. Create .rags/config.yaml with default chunk settings (800 chars, 150 overlap)
@@ -80,31 +88,57 @@ func initCmd() *cobra.Command {
   5. Scan all text files, chunk into paragraphs, embed, and upsert to Qdrant
   6. Write .rags/state.json with file hashes for future incremental updates
 
+Public mode (root only):
+
+  sudo rags init --public [--name NAME] [PATH]
+
+  Creates a shared repository under /srv/rags/<name>, writes public metadata into
+  .rags/config.yaml, installs a systemd service, and starts a read-only search server.
+  Other users can run rags grep inside the repo, but cannot update the index.
+
 Default exclude list: .git .rags node_modules __pycache__ .venv vendor .idea .vscode
 Edit .rags/config.yaml after init to customize paths and chunk settings.
 
 Examples:
   rags init                          Initialize in current directory
-  rags init                          (first run: prompts for API key and settings)`,
+  sudo rags init --public            Create public repo from current directory
+  sudo rags init --public --name bk7258-docs /path/to/docs`,
 
-		Example: "  rags init",
+		Example: `  rags init
+  sudo rags init --public
+  sudo rags init --public --name bk7258-docs /path/to/docs`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, err := os.Getwd()
+			sourcePath, err := resolveInitSourcePath(args)
 			if err != nil {
-				return fmt.Errorf("get current directory: %w", err)
+				return err
 			}
 
-			// Check if already initialized
+			if public {
+				settings, err := loadSettingsForPublicInit()
+				if err != nil {
+					return err
+				}
+				vdb := vectordb.NewClient(settings.Qdrant.URL)
+				_, err = publicrepo.Init(publicrepo.InitOptions{
+					Name:       publicName,
+					SourcePath: sourcePath,
+					Settings:   settings,
+					VDB:        vdb,
+					IndexFn:    runFullIndex,
+				})
+				return err
+			}
+
+			cwd := sourcePath
 			if config.HasRagsProject(cwd) {
 				return fmt.Errorf("rags project already exists in %s", cwd)
 			}
 
-			// Load or create global settings
 			settings, err := config.LoadSettings()
 			if err != nil {
 				return fmt.Errorf("load settings: %w", err)
 			}
-
 			if settings.Embedding.APIKey == "" {
 				settings = promptSettings(settings)
 				if err := config.SaveSettings(settings); err != nil {
@@ -112,23 +146,19 @@ Examples:
 				}
 			}
 
-			// Determine project name from directory
 			projectName := filepath.Base(cwd)
-			collectionName := "rags_" + sanitizeName(projectName)
+			collectionName := config.CollectionName(projectName)
 
-			// Create Qdrant collection
 			vdb := vectordb.NewClient(settings.Qdrant.URL)
 			if err := vdb.EnsureCollection(collectionName, bgeM3VectorSize); err != nil {
 				return fmt.Errorf("create collection: %w", err)
 			}
 
-			// Write project config
 			pcfg := config.DefaultProjectConfig(projectName)
 			if err := config.SaveProjectConfig(cwd, pcfg); err != nil {
 				return fmt.Errorf("save project config: %w", err)
 			}
 
-			// Register project
 			absCwd, _ := filepath.Abs(cwd)
 			if err := config.RegisterProject(config.ProjectEntry{
 				Name:       projectName,
@@ -140,16 +170,17 @@ Examples:
 
 			fmt.Printf("✓ Project '%s' initialized\n", projectName)
 			fmt.Printf("  Collection: %s\n", collectionName)
-
-			// Full index
 			fmt.Println("Indexing files...")
 			if err := runFullIndex(cwd, pcfg, collectionName, &settings, vdb); err != nil {
 				return fmt.Errorf("initial index: %w", err)
 			}
-
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&public, "public", false, "Create a shared public repository under /srv/rags/<name> (requires root)")
+	cmd.Flags().StringVar(&publicName, "name", "", "Public repository name (default: derived from source folder name)")
+	return cmd
 }
 
 func updateCmd() *cobra.Command {
@@ -183,9 +214,11 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("not a rags project (run 'rags init' first): %w", err)
 			}
+			if err := server.RequireRootForPublicWrite(pcfg); err != nil {
+				return err
+			}
 
-			// Load global settings
-			settings, err := config.LoadSettings()
+			settings, err := loadSettingsForProject(pcfg)
 			if err != nil {
 				return fmt.Errorf("load settings: %w", err)
 			}
@@ -194,7 +227,10 @@ Examples:
 				return fmt.Errorf("no API key configured. Run 'rags init' first or edit ~/.rags/settings.yaml")
 			}
 
-			collectionName := "rags_" + sanitizeName(pcfg.Name)
+			collectionName := config.CollectionName(pcfg.Name)
+			if pcfg.IsPublic() && pcfg.Public != nil && pcfg.Public.Collection != "" {
+				collectionName = pcfg.Public.Collection
+			}
 
 			// Load current state
 			state, err := config.LoadProjectState(cwd)
@@ -334,70 +370,38 @@ Examples:
 				return fmt.Errorf("not a rags project: %w", err)
 			}
 
+			if pcfg.IsPublic() && pcfg.Public != nil {
+				output, err := client.RemoteSearch(pcfg.Public.Endpoint, client.SearchRequest{
+					Queries: queries,
+					TopK:    topK,
+					Dedup:   dedup,
+					Explore: explore,
+				})
+				if err != nil {
+					return err
+				}
+				fmt.Print(output)
+				return nil
+			}
+
 			settings, err := config.LoadSettings()
 			if err != nil {
 				return fmt.Errorf("load settings: %w", err)
 			}
-
 			if settings.Embedding.APIKey == "" {
 				return fmt.Errorf("no API key configured")
 			}
 
-			collectionName := "rags_" + sanitizeName(pcfg.Name)
-
-			vdb := vectordb.NewClient(settings.Qdrant.URL)
-			emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model)
-
-			var rerank *reranker.Client
-			if settings.Rerank != nil && settings.Rerank.APIKey != "" {
-				rerank = reranker.NewClient(settings.Rerank.BaseURL, settings.Rerank.APIKey, settings.Rerank.Model)
+			result, err := app.RunSearch(pcfg, settings, app.SearchOptions{
+				Queries: queries,
+				TopK:    topK,
+				Dedup:   dedup,
+				Explore: explore,
+			})
+			if err != nil {
+				return err
 			}
-
-			searcher := query.New(vdb, emb, rerank)
-			// Fetch more results for dedup/explore to have enough across files
-			fetchK := topK
-			if dedup || explore {
-				fetchK = topK * 3
-				if fetchK > 50 {
-					fetchK = 50
-				}
-			}
-
-			// Search each query independently, then merge
-			var allResults []query.Result
-			displayQuery := queries[0] // for explore output header
-			for i, q := range queries {
-				results, err := searcher.Search(collectionName, pcfg.Name, q, fetchK)
-				if err != nil {
-					return fmt.Errorf("search %q: %w", q, err)
-				}
-				if i == 0 && len(queries) == 1 {
-					allResults = results
-				} else {
-					allResults = query.MergeResults(allResults, results)
-				}
-			}
-
-			if len(allResults) == 0 {
-				fmt.Println("No results found.")
-				return nil
-			}
-
-			// Dedup first if requested
-			if dedup {
-				allResults = query.Dedup(allResults)
-			}
-
-			// Trim to requested count
-			if len(allResults) > topK {
-				allResults = allResults[:topK]
-			}
-
-			if explore {
-				fmt.Print(query.FormatExplore(allResults, displayQuery))
-			} else {
-				fmt.Print(query.FormatResults(allResults))
-			}
+			fmt.Print(result.Output)
 			return nil
 		},
 	}
@@ -494,6 +498,14 @@ Examples:
 				if err == nil {
 					fmt.Println("── Project (.rags/config.yaml) ──")
 					fmt.Printf("  Name:       %s\n", pcfg.Name)
+					fmt.Printf("  Mode:       %s\n", pcfg.Mode)
+					if pcfg.IsPublic() && pcfg.Public != nil {
+						fmt.Printf("  Repo root:  %s\n", pcfg.Public.RepoRoot)
+						fmt.Printf("  Docs root:  %s\n", pcfg.Public.DocsRoot)
+						fmt.Printf("  Endpoint:   %s\n", pcfg.Public.Endpoint)
+						fmt.Printf("  Service:    %s\n", pcfg.Public.Service)
+						fmt.Printf("  Collection: %s\n", pcfg.Public.Collection)
+					}
 					fmt.Printf("  Paths:      %v\n", pcfg.Paths)
 					fmt.Printf("  Exclude:    %v\n", pcfg.Exclude)
 					fmt.Printf("  Chunk size: %d\n", pcfg.Index.ChunkSize)
@@ -545,6 +557,75 @@ Examples:
 			return nil
 		},
 	}
+}
+
+func serveCmd() *cobra.Command {
+	var name string
+
+	cmd := &cobra.Command{
+		Use:    "serve",
+		Short:  "Run the public rags search server (used by systemd)",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if name == "" {
+				return fmt.Errorf("--name is required")
+			}
+
+			repoRoot := config.PublicRepoPath(name)
+			pcfg, err := config.LoadProjectConfig(repoRoot)
+			if err != nil {
+				return fmt.Errorf("load public repo config: %w", err)
+			}
+			settings, err := config.LoadRootSettings()
+			if err != nil {
+				return fmt.Errorf("load root settings: %w", err)
+			}
+			if settings.Embedding.APIKey == "" {
+				return fmt.Errorf("no API key in %s/settings.yaml", filepath.Join(config.RootHome, config.RagsDir))
+			}
+
+			srv, err := server.New(repoRoot, pcfg, settings)
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return srv.Run(ctx)
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "Public repository name")
+	return cmd
+}
+
+func resolveInitSourcePath(args []string) (string, error) {
+	if len(args) == 1 {
+		return filepath.Abs(args[0])
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get current directory: %w", err)
+	}
+	return filepath.Abs(cwd)
+}
+
+func loadSettingsForPublicInit() (config.GlobalSettings, error) {
+	settings, err := config.LoadRootSettings()
+	if err != nil {
+		return config.GlobalSettings{}, fmt.Errorf("load root settings: %w", err)
+	}
+	if settings.Embedding.APIKey == "" {
+		return config.GlobalSettings{}, fmt.Errorf("no API key in %s/settings.yaml; configure SiliconFlow credentials for root first", filepath.Join(config.RootHome, config.RagsDir))
+	}
+	return settings, nil
+}
+
+func loadSettingsForProject(pcfg config.ProjectConfig) (config.GlobalSettings, error) {
+	if pcfg.IsPublic() {
+		return config.LoadRootSettings()
+	}
+	return config.LoadSettings()
 }
 
 // --- helpers ---
@@ -637,26 +718,6 @@ func promptSettings(settings config.GlobalSettings) config.GlobalSettings {
 	}
 
 	return settings
-}
-
-func sanitizeName(name string) string {
-	// Keep valid ASCII chars, hash the original for uniqueness if truncated
-	name = strings.ToLower(name)
-	name = strings.ReplaceAll(name, " ", "_")
-	name = strings.ReplaceAll(name, "-", "_")
-	var b strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-		}
-	}
-	result := b.String()
-	// If the result is too short (Chinese-heavy name got stripped), use a hash
-	if len(result) < 3 {
-		h := fmt.Sprintf("%x", sha256.Sum256([]byte(name)))
-		result = h[:8]
-	}
-	return result
 }
 
 func maskKey(key string) string {

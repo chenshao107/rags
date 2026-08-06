@@ -12,9 +12,11 @@ import (
 // ProjectConfig represents .rags/config.yaml
 type ProjectConfig struct {
 	Name    string      `yaml:"name"`
+	Mode    string      `yaml:"mode,omitempty"`
 	Paths   []string    `yaml:"paths"`
 	Exclude []string    `yaml:"exclude"`
 	Index   IndexConfig `yaml:"index"`
+	Public  *PublicMeta `yaml:"public,omitempty"`
 }
 
 type IndexConfig struct {
@@ -31,6 +33,7 @@ type ProjectState struct {
 func DefaultProjectConfig(name string) ProjectConfig {
 	return ProjectConfig{
 		Name:    name,
+		Mode:    ModePrivate,
 		Paths:   []string{"."},
 		Exclude: []string{".git", ".rags", "node_modules", "__pycache__", ".venv", "vendor", ".idea", ".vscode"},
 		Index: IndexConfig{
@@ -50,6 +53,9 @@ func LoadProjectConfig(projectRoot string) (ProjectConfig, error) {
 	var c ProjectConfig
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return ProjectConfig{}, fmt.Errorf("parse project config: %w", err)
+	}
+	if c.Mode == "" {
+		c.Mode = ModePrivate
 	}
 	return c, nil
 }

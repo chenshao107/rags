@@ -92,6 +92,16 @@ func LoadSettings() (GlobalSettings, error) {
 	if err != nil {
 		return DefaultSettings(), err
 	}
+	return LoadSettingsFromDir(dir)
+}
+
+// LoadRootSettings reads /root/.rags/settings.yaml for public server operations.
+func LoadRootSettings() (GlobalSettings, error) {
+	return LoadSettingsFromDir(filepath.Join(RootHome, RagsDir))
+}
+
+// LoadSettingsFromDir reads settings.yaml from a specific directory.
+func LoadSettingsFromDir(dir string) (GlobalSettings, error) {
 	path := filepath.Join(dir, SettingsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
