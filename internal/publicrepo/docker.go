@@ -11,14 +11,13 @@ import (
 
 // DockerInitOptions controls docker-compose repository initialization.
 type DockerInitOptions struct {
-	Name       string
-	DocsPath   string
-	PublicHost string
-	Port       int
-	Settings   config.GlobalSettings
+	Name        string
+	DocsPath    string
+	PublicHost  string
+	Port        int
+	Settings    config.GlobalSettings
 	SettingsDir string
-	VDB        *vectordb.Client
-	IndexFn    func(repoRoot string, pcfg config.ProjectConfig, collection string, settings *config.GlobalSettings, vdb *vectordb.Client) error
+	VDB         *vectordb.Client
 }
 
 // InitDocker creates a public repository for Docker Compose deployments.
@@ -97,13 +96,12 @@ func InitDocker(opts DockerInitOptions) (string, error) {
 	fmt.Printf("  Collection: %s\n", collectionName)
 	fmt.Printf("  Endpoint:   %s\n", endpoint)
 
-	if opts.IndexFn != nil && !alreadyInit {
-		fmt.Println("Indexing files...")
-		if err := opts.IndexFn(repoRoot, pcfg, collectionName, &opts.Settings, opts.VDB); err != nil {
-			return "", fmt.Errorf("initial index: %w", err)
-		}
+	if !alreadyInit {
+		fmt.Println()
+		fmt.Println("Edit .rags/config.yaml and docker/.env as needed, then run:")
+		fmt.Println("  ./update.sh")
 	}
 
-	fmt.Printf("Users can search with: cd %s && rags grep \"your query\"\n", repoRoot)
+	fmt.Printf("After ./update.sh, users can search: cd %s && rags grep \"your query\"\n", repoRoot)
 	return repoRoot, nil
 }

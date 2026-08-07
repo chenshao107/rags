@@ -35,9 +35,9 @@ to your project files. It uses:
 
 == Quick Start ==
 
-  1. rags init        Create a .rags project and index all files
+  1. rags init        Create a .rags project (edit config, then rags update to index)
   2. rags grep "..."   Search with natural language
-  3. rags update       Re-index after changing files
+  3. rags update       Build or refresh the index after file or config changes
 
 == Project discovery & directory scope ==
 
@@ -84,34 +84,34 @@ func initCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [PATH]",
-		Short: "Create a .rags project and perform the first full index",
+		Short: "Create a .rags project (indexing happens on update)",
 		Long: `Initialize rags in the current directory or PATH. This will:
 
   1. Check/create ~/.rags/settings.yaml (interactive first-time setup for API key)
   2. Create .rags/config.yaml with default chunk settings (800 chars, 150 overlap)
   3. Create a Qdrant collection named rags_<project_name>
   4. Register the project in ~/.rags/projects.yaml
-  5. Scan all text files, chunk into paragraphs, embed, and upsert to Qdrant
-  6. Write .rags/state.json with file hashes for future incremental updates
+
+  No embedding runs during init. Edit .rags/config.yaml and ~/.rags/settings.yaml
+  (chunk size, overlap, embedding model, etc.), then run rags update to build the index.
 
 Public mode (root only):
 
   sudo rags init --public [--name NAME] [PATH]
 
   Creates a shared repository under /srv/rags/<name>, writes public metadata into
-  .rags/config.yaml, installs a systemd service, and starts a read-only search server.
-  Other users can run rags grep inside the repo, but cannot update the index.
+  .rags/config.yaml, and installs a systemd service. Run sudo rags update after
+  tuning config to embed documents.
 
   Re-running init after deleting .rags automatically reclaims the previous Qdrant
   collection for this path (no manual curl DELETE needed).
 
 Default exclude list: .git .rags node_modules __pycache__ .venv vendor .idea .vscode
-Edit .rags/config.yaml after init to customize paths and chunk settings.
 
 Examples:
-  rags init                          Initialize in current directory
-  sudo rags init --public            Create public repo from current directory
-  sudo rags init --public --name bk7258-docs /path/to/docs`,
+  rags init && vim .rags/config.yaml && rags update
+  sudo rags init --public --name bk7258-docs /path/to/docs
+  cd /srv/rags/bk7258-docs && sudo rags update`,
 
 		Example: `  rags init
   sudo rags init --public
@@ -134,7 +134,6 @@ Examples:
 					SourcePath: sourcePath,
 					Settings:   settings,
 					VDB:        vdb,
-					IndexFn:    runFullIndex,
 				})
 				return err
 			}
@@ -185,10 +184,7 @@ Examples:
 
 			fmt.Printf("✓ Project '%s' initialized\n", projectName)
 			fmt.Printf("  Collection: %s\n", collectionName)
-			fmt.Println("Indexing files...")
-			if err := runFullIndex(cwd, pcfg, collectionName, &settings, vdb); err != nil {
-				return fmt.Errorf("initial index: %w", err)
-			}
+			printInitNextSteps("rags update")
 			return nil
 		},
 	}
@@ -738,7 +734,6 @@ func dockerInitCmd() *cobra.Command {
 				Settings:    settings,
 				SettingsDir: settingsDir,
 				VDB:         vdb,
-				IndexFn:     runFullIndex,
 			})
 			return err
 		},
@@ -804,36 +799,10 @@ func loadSettingsForProject(pcfg config.ProjectConfig) (config.GlobalSettings, e
 
 // --- helpers ---
 
-func runFullIndex(cwd string, pcfg config.ProjectConfig, collection string, settings *config.GlobalSettings, vdb *vectordb.Client) error {
-	emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, config.EmbeddingVectorSize(settings.Embedding))
-	idx := indexer.New(vdb, emb)
-
-	files, err := idx.ScanFiles(cwd, pcfg)
-	if err != nil {
-		return err
-	}
-
-	if len(files) == 0 {
-		fmt.Println("  No files found to index.")
-		return nil
-	}
-
-	fmt.Printf("  Found %d files, indexing...\n", len(files))
-	if err := idx.IndexFiles(cwd, collection, pcfg.Name, files, pcfg.Index.ChunkSize, pcfg.Index.Overlap); err != nil {
-		return err
-	}
-
-	// Save initial state
-	state := config.ProjectState{Files: make(map[string]string)}
-	for _, f := range files {
-		state.Files[f.RelPath] = f.Hash
-	}
-	if err := config.SaveProjectState(cwd, state); err != nil {
-		return err
-	}
-
-	fmt.Printf("  Indexed %d files\n", len(files))
-	return nil
+func printInitNextSteps(updateCmd string) {
+	fmt.Println()
+	fmt.Println("Edit .rags/config.yaml (chunk size, overlap, paths) and settings as needed, then run:")
+	fmt.Printf("  %s\n", updateCmd)
 }
 
 func promptSettings(settings config.GlobalSettings) config.GlobalSettings {

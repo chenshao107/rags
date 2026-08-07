@@ -17,11 +17,10 @@ type InitOptions struct {
 	SourcePath string
 	Settings   config.GlobalSettings
 	VDB        *vectordb.Client
-	IndexFn    func(repoRoot string, pcfg config.ProjectConfig, collection string, settings *config.GlobalSettings, vdb *vectordb.Client) error
 }
 
 // Init creates a public repository under /srv/rags/<name>, writes .rags metadata,
-// registers the project, installs systemd service, and performs the first index.
+// registers the project, and installs a systemd service. Run update to embed documents.
 func Init(opts InitOptions) (string, error) {
 	if !serverIsRoot() {
 		return "", fmt.Errorf("public repository init requires root; run: sudo rags init --public [--name NAME] [PATH]")
@@ -97,13 +96,9 @@ func Init(opts InitOptions) (string, error) {
 	fmt.Printf("  Collection: %s\n", collectionName)
 	fmt.Printf("  Endpoint:   %s\n", meta.Endpoint)
 	fmt.Printf("  Service:    %s\n", meta.Service)
-
-	if opts.IndexFn != nil {
-		fmt.Println("Indexing files...")
-		if err := opts.IndexFn(repoRoot, pcfg, collectionName, &opts.Settings, opts.VDB); err != nil {
-			return "", fmt.Errorf("initial index: %w", err)
-		}
-	}
+	fmt.Println()
+	fmt.Println("Edit .rags/config.yaml and /root/.rags/settings.yaml as needed, then run:")
+	fmt.Printf("  cd %s && sudo rags update\n", repoRoot)
 
 	fmt.Println("Installing systemd service...")
 	if err := systemd.InstallPublicService(name); err != nil {
@@ -111,7 +106,7 @@ func Init(opts InitOptions) (string, error) {
 	}
 
 	fmt.Println("✓ Public rags service started")
-	fmt.Printf("Users can search with: cd %s && rags grep \"your query\"\n", repoRoot)
+	fmt.Printf("After sudo rags update, users can search: cd %s && rags grep \"your query\"\n", repoRoot)
 	return repoRoot, nil
 }
 
