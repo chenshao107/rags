@@ -22,6 +22,8 @@ type DockerInitOptions struct {
 }
 
 // InitDocker creates a public repository for Docker Compose deployments.
+// The docs directory is the project root: .rags lives alongside the documents
+// so host users can cd into the docs tree and search with directory scope.
 func InitDocker(opts DockerInitOptions) (string, error) {
 	name := opts.Name
 	if name == "" {
@@ -51,32 +53,13 @@ func InitDocker(opts DockerInitOptions) (string, error) {
 		settingsDir = config.DockerSettingsDir
 	}
 
-	repoRoot := config.PublicRepoPath(name)
-	if stat, err := os.Stat(repoRoot); err == nil && !stat.IsDir() {
-		return "", fmt.Errorf("repo path exists and is not a directory: %s", repoRoot)
-	} else if os.IsNotExist(err) {
-		if err := os.MkdirAll(repoRoot, 0755); err != nil {
-			return "", fmt.Errorf("create repo root: %w", err)
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("check repo path: %w", err)
-	}
+	repoRoot := docsPath
 
 	collectionName := config.CollectionName(name)
 	endpoint := config.HTTPEndpoint(opts.PublicHost, opts.Port)
 
 	docsRoot := docsPath
 	paths := []string{"."}
-	if docsPath != repoRoot {
-		linkPath := filepath.Join(repoRoot, "docs")
-		if _, err := os.Lstat(linkPath); os.IsNotExist(err) {
-			if err := os.Symlink(docsPath, linkPath); err != nil {
-				return "", fmt.Errorf("link docs from %s: %w", docsPath, err)
-			}
-		}
-		docsRoot = linkPath
-		paths = []string{"./docs"}
-	}
 
 	pcfg := config.DefaultProjectConfig(name)
 	pcfg.Mode = config.ModePublic

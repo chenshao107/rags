@@ -48,6 +48,9 @@ func (idx *Indexer) ScanFiles(root string, cfg config.ProjectConfig) ([]FileInfo
 
 	for _, p := range cfg.Paths {
 		scanPath := filepath.Join(root, p)
+		if resolved, err := filepath.EvalSymlinks(scanPath); err == nil {
+			scanPath = resolved
+		}
 
 		err := filepath.Walk(scanPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {

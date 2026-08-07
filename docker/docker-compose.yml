@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.0
     restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
@@ -15,9 +15,9 @@ services:
       - .env
     environment:
       QDRANT_URL: http://qdrant:6333
+      DOCS_PATH: /data/docs
     volumes:
-      - ${DOCS_PATH}:/data/docs:ro
-      - ${RAGS_STATE:-./rags-state}:/srv/rags
+      - ${DOCS_PATH}:/data/docs
     ports:
       - "${RAGS_PORT:-18787}:${RAGS_PORT:-18787}"
     restart: unless-stopped

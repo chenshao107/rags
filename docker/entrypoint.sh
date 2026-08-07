@@ -24,8 +24,10 @@ rags docker-init
 
 if [ "${RAGS_AUTO_UPDATE:-0}" = "1" ]; then
   echo "Running incremental update..."
-  cd "/srv/rags/${RAGS_NAME}" && rags update
+  cd "${DOCS_PATH}" && rags update
 fi
+
+export RAGS_REPO_ROOT="${DOCS_PATH}"
 
 echo "Starting rags serve..."
 exec rags serve --name "${RAGS_NAME}"

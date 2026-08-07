@@ -658,7 +658,10 @@ func serveCmd() *cobra.Command {
 				return fmt.Errorf("--name or RAGS_NAME is required")
 			}
 
-			repoRoot := config.PublicRepoPath(name)
+			repoRoot := os.Getenv("RAGS_REPO_ROOT")
+			if repoRoot == "" {
+				repoRoot = config.PublicRepoPath(name)
+			}
 			pcfg, err := config.LoadProjectConfig(repoRoot)
 			if err != nil {
 				return fmt.Errorf("load public repo config: %w", err)

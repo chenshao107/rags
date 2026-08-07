@@ -94,17 +94,22 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-**检索（宿主机安装 rags CLI，进入 compose 持久化目录）：**
+**检索（宿主机安装 rags CLI，进入文档目录，与私有库用法相同）：**
 
 ```bash
-cd ./rags-state/bk7258-docs    # 对应 .env 里 RAGS_STATE
+cd /path/to/chip/docs          # 对应 .env 里 DOCS_PATH，首次启动后会有 .rags/
 rags grep "BK7258 OTA 分区"
+
+cd /path/to/chip/docs/api/     # 子目录内检索，只搜该目录及子树
+rags grep "OTA 分区"
 ```
 
 **更新索引：**
 
 ```bash
-docker compose exec rags sh -c 'cd /srv/rags/$RAGS_NAME && rags update'
+./update.sh
+# 或
+docker compose exec rags sh -c 'cd /data/docs && rags update'
 ```
 
 远程用户检索时，将 `.env` 中 `RAGS_PUBLIC_HOST` 设为服务器 IP。
