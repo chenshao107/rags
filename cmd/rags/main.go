@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/chenshao/rags/internal/app"
@@ -195,7 +196,9 @@ Examples:
 }
 
 func updateCmd() *cobra.Command {
-	return &cobra.Command{
+	var workers int
+
+	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Incrementally sync the index with file changes",
 		Long: `Scan the project for file changes and update only what's needed:
@@ -203,6 +206,7 @@ func updateCmd() *cobra.Command {
   1. Walk configured paths, compute SHA256 hash of each file
   2. Compare against .rags/state.json to detect: new / modified / deleted files
   3. Deleted files → delete all chunks from Qdrant by file_path filter
+     (includes files removed from disk and orphan vectors not tracked in state)
   4. New & modified files → re-chunk, re-embed, upsert (file-level invalidation)
   5. Update .rags/state.json with new hashes
   6. Cross-project GC: check ~/.rags/projects.yaml, if any registered project
@@ -270,15 +274,40 @@ Examples:
 			}
 
 			// Compute diff
-			newFiles, modifiedFiles, deletedFiles := indexer.ComputeDiff(files, state)
+			newFiles, modifiedFiles, skippedFiles, deletedFiles := indexer.ComputeDiff(files, state)
 
-			fmt.Printf("  %d new, %d modified, %d removed\n", len(newFiles), len(modifiedFiles), len(deletedFiles))
+			fmt.Printf("  %d new, %d modified, %d removed, %d unchanged\n",
+				len(newFiles), len(modifiedFiles), len(deletedFiles), len(skippedFiles))
+			for _, f := range skippedFiles {
+				fmt.Printf("  skip %s\n", f.RelPath)
+			}
+
+			// Remove vectors for files gone from disk (state diff + Qdrant orphans)
+			indexedPaths, err := vdb.ListFilePaths(collectionName, pcfg.Name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: list indexed files: %v\n", err)
+			} else {
+				orphanFiles := indexer.FindOrphanIndexedFiles(indexedPaths, files)
+				if len(orphanFiles) > 0 {
+					fmt.Printf("  %d orphan(s) in Qdrant but missing on disk\n", len(orphanFiles))
+					for _, path := range orphanFiles {
+						fmt.Printf("  orphan %s\n", path)
+					}
+				}
+				deletedFiles = indexer.MergeDeletedFiles(deletedFiles, orphanFiles)
+			}
 
 			// Handle deleted files
 			if len(deletedFiles) > 0 {
 				fmt.Printf("Removing %d files...\n", len(deletedFiles))
 				if err := idx.DeleteFiles(collectionName, deletedFiles); err != nil {
 					return fmt.Errorf("delete files: %w", err)
+				}
+				for _, path := range deletedFiles {
+					delete(state.Files, path)
+				}
+				if err := config.SaveProjectState(projectRoot, state); err != nil {
+					return fmt.Errorf("save state after delete: %w", err)
 				}
 			}
 
@@ -293,10 +322,27 @@ Examples:
 				if err := vdb.EnsureCollection(collectionName, config.EmbeddingVectorSize(settings.Embedding)); err != nil {
 					return fmt.Errorf("ensure collection: %w", err)
 				}
-				fmt.Printf("Indexing %d files...\n", len(toIndex))
-				if err := idx.IndexFiles(projectRoot, collectionName, pcfg.Name, toIndex, pcfg.Index.ChunkSize, pcfg.Index.Overlap); err != nil {
+				if workers <= 0 {
+					workers = indexer.DefaultIndexWorkers()
+				}
+				fmt.Printf("Indexing %d files (%d workers)...\n", len(toIndex), workers)
+
+				var stateMu sync.Mutex
+				saveFile := func(f indexer.FileInfo) error {
+					stateMu.Lock()
+					defer stateMu.Unlock()
+					if state.Files == nil {
+						state.Files = make(map[string]string)
+					}
+					state.Files[f.RelPath] = f.Hash
+					return config.SaveProjectState(projectRoot, state)
+				}
+
+				if err := idx.IndexFiles(projectRoot, collectionName, pcfg.Name, toIndex, pcfg.Index.ChunkSize, pcfg.Index.Overlap, workers, saveFile); err != nil {
 					return fmt.Errorf("index files: %w", err)
 				}
+			} else if len(skippedFiles) > 0 {
+				fmt.Println("Nothing to index.")
 			}
 
 			// Update state
@@ -319,6 +365,9 @@ Examples:
 			return nil
 		},
 	}
+
+	cmd.Flags().IntVar(&workers, "workers", 0, "Parallel indexing workers (default: RAGS_INDEX_WORKERS or min(8, NumCPU))")
+	return cmd
 }
 
 func grepCmd() *cobra.Command {

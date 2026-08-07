@@ -7,7 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/chenshao/rags/internal/config"
 	"github.com/chenshao/rags/internal/embedder"
@@ -93,19 +97,21 @@ func (idx *Indexer) ScanFiles(root string, cfg config.ProjectConfig) ([]FileInfo
 }
 
 // ComputeDiff compares scanned files with stored state and returns actions
-func ComputeDiff(scanned []FileInfo, state config.ProjectState) (newFiles, modifiedFiles []FileInfo, deletedFiles []string) {
+func ComputeDiff(scanned []FileInfo, state config.ProjectState) (newFiles, modifiedFiles, skippedFiles []FileInfo, deletedFiles []string) {
 	scannedMap := make(map[string]string, len(scanned))
 	for _, f := range scanned {
 		scannedMap[f.RelPath] = f.Hash
 	}
 
-	// Find new and modified files
+	// Find new, modified, and unchanged files
 	for _, f := range scanned {
 		oldHash, exists := state.Files[f.RelPath]
 		if !exists {
 			newFiles = append(newFiles, f)
 		} else if oldHash != f.Hash {
 			modifiedFiles = append(modifiedFiles, f)
+		} else {
+			skippedFiles = append(skippedFiles, f)
 		}
 	}
 
@@ -119,25 +125,131 @@ func ComputeDiff(scanned []FileInfo, state config.ProjectState) (newFiles, modif
 	return
 }
 
-// IndexFiles chunks and indexes a list of files
-func (idx *Indexer) IndexFiles(root string, collection string, projectName string, files []FileInfo, chunkSize, overlap int) error {
-	total := len(files)
-	for i, f := range files {
-		fmt.Printf("  [%d/%d] %s\n", i+1, total, f.RelPath)
+// FindOrphanIndexedFiles returns file paths present in Qdrant but absent from disk scan.
+func FindOrphanIndexedFiles(indexedPaths []string, scanned []FileInfo) []string {
+	scannedSet := make(map[string]bool, len(scanned))
+	for _, f := range scanned {
+		scannedSet[f.RelPath] = true
+	}
 
-		chunks, err := ChunkFile(f.Path, f.RelPath, chunkSize, overlap)
-		if err != nil {
-			return fmt.Errorf("chunk %s: %w", f.RelPath, err)
-		}
-		if len(chunks) == 0 {
-			continue
-		}
-
-		if err := idx.indexChunks(collection, projectName, f, chunks); err != nil {
-			return err
+	var orphans []string
+	for _, path := range indexedPaths {
+		if !scannedSet[path] {
+			orphans = append(orphans, path)
 		}
 	}
-	return nil
+	return orphans
+}
+
+// MergeDeletedFiles deduplicates deleted file paths while preserving order.
+func MergeDeletedFiles(parts ...[]string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, part := range parts {
+		for _, path := range part {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// DefaultIndexWorkers returns parallel indexing worker count.
+// Override with RAGS_INDEX_WORKERS; default is min(8, NumCPU).
+func DefaultIndexWorkers() int {
+	if v := os.Getenv("RAGS_INDEX_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+	}
+	n := runtime.NumCPU()
+	if n > 8 {
+		return 8
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// IndexFiles chunks and indexes a list of files using a worker pool.
+// workers <= 0 uses DefaultIndexWorkers().
+// onFileDone is called after each file is indexed (optional, e.g. to persist state).
+func (idx *Indexer) IndexFiles(root string, collection string, projectName string, files []FileInfo, chunkSize, overlap, workers int, onFileDone func(FileInfo) error) error {
+	if workers <= 0 {
+		workers = DefaultIndexWorkers()
+	}
+
+	total := len(files)
+	if total == 0 {
+		return nil
+	}
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+		done     atomic.Int32
+	)
+
+	sem := make(chan struct{}, workers)
+	for _, file := range files {
+		f := file
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			mu.Lock()
+			aborted := firstErr != nil
+			mu.Unlock()
+			if aborted {
+				return
+			}
+
+			chunks, err := ChunkFile(f.Path, f.RelPath, chunkSize, overlap)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("chunk %s: %w", f.RelPath, err)
+				}
+				mu.Unlock()
+				return
+			}
+
+			if len(chunks) > 0 {
+				if err := idx.indexChunks(collection, projectName, f, chunks); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					return
+				}
+			}
+
+			n := done.Add(1)
+			fmt.Printf("  [%d/%d] %s\n", n, total, f.RelPath)
+
+			if onFileDone != nil {
+				if err := onFileDone(f); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("persist state for %s: %w", f.RelPath, err)
+					}
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	return firstErr
 }
 
 func (idx *Indexer) indexChunks(collection, projectName string, f FileInfo, chunks []Chunk) error {

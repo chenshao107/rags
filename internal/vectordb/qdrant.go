@@ -90,7 +90,12 @@ type collectionInfo struct {
 func NewClient(baseURL string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    &http.Client{},
+		HTTP: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        64,
+				MaxIdleConnsPerHost: 32,
+			},
+		},
 	}
 }
 
@@ -233,6 +238,137 @@ func (c *Client) Search(collection string, vector []float32, limit int, filter *
 		return nil, fmt.Errorf("decode search results: %w", err)
 	}
 	return result.Result, nil
+}
+
+type facetRequest struct {
+	Key    string  `json:"key"`
+	Limit  int     `json:"limit"`
+	Filter *filter `json:"filter,omitempty"`
+}
+
+type facetResponse struct {
+	Result struct {
+		Hits []struct {
+			Value string `json:"value"`
+			Count int    `json:"count"`
+		} `json:"hits"`
+	} `json:"result"`
+}
+
+type scrollRequest struct {
+	Filter      *filter `json:"filter,omitempty"`
+	Limit       int     `json:"limit"`
+	WithPayload bool    `json:"with_payload"`
+	WithVector  bool    `json:"with_vector"`
+	Offset      any     `json:"offset,omitempty"`
+}
+
+type scrollResponse struct {
+	Result struct {
+		Points []struct {
+			Payload map[string]any `json:"payload"`
+		} `json:"points"`
+		NextPageOffset any `json:"next_page_offset"`
+	} `json:"result"`
+}
+
+// ListFilePaths returns distinct file_path values indexed for a project.
+func (c *Client) ListFilePaths(collection, projectName string) ([]string, error) {
+	paths, err := c.listFilePathsFacet(collection, projectName)
+	if err == nil {
+		return paths, nil
+	}
+	return c.listFilePathsScroll(collection, projectName)
+}
+
+func (c *Client) listFilePathsFacet(collection, projectName string) ([]string, error) {
+	req := facetRequest{
+		Key:    "file_path",
+		Limit:  100000,
+		Filter: ProjectFilter(projectName),
+	}
+	body, _ := json.Marshal(req)
+	url := fmt.Sprintf("%s/collections/%s/facet", c.BaseURL, collection)
+	httpReq, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("facet file paths: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("facet file paths failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var result facetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode facet response: %w", err)
+	}
+
+	paths := make([]string, 0, len(result.Result.Hits))
+	for _, hit := range result.Result.Hits {
+		if hit.Value != "" {
+			paths = append(paths, hit.Value)
+		}
+	}
+	return paths, nil
+}
+
+func (c *Client) listFilePathsScroll(collection, projectName string) ([]string, error) {
+	seen := make(map[string]bool)
+	var offset any
+
+	for {
+		req := scrollRequest{
+			Filter:      ProjectFilter(projectName),
+			Limit:       256,
+			WithPayload: true,
+			WithVector:  false,
+			Offset:      offset,
+		}
+		body, _ := json.Marshal(req)
+		url := fmt.Sprintf("%s/collections/%s/points/scroll", c.BaseURL, collection)
+		httpReq, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTP.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("scroll file paths: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("scroll file paths failed (%d): %s", resp.StatusCode, string(respBody))
+		}
+
+		var result scrollResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decode scroll response: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, pt := range result.Result.Points {
+			if v, ok := pt.Payload["file_path"].(string); ok && v != "" {
+				seen[v] = true
+			}
+		}
+
+		if result.Result.NextPageOffset == nil {
+			break
+		}
+		offset = result.Result.NextPageOffset
+	}
+
+	paths := make([]string, 0, len(seen))
+	for p := range seen {
+		paths = append(paths, p)
+	}
+	return paths, nil
 }
 
 // DeleteByFilePath deletes all points matching a file_path

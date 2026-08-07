@@ -36,7 +36,7 @@ func DefaultProjectConfig(name string) ProjectConfig {
 		Name:    name,
 		Mode:    ModePrivate,
 		Paths:   []string{"."},
-		Exclude: []string{".git", ".rags", "node_modules", "__pycache__", ".venv", "vendor", ".idea", ".vscode"},
+		Exclude: []string{".git", ".rags", "section_index.json", "node_modules", "__pycache__", ".venv", "vendor", ".idea", ".vscode"},
 		Index: IndexConfig{
 			ChunkSize: 800,
 			Overlap:   150,
