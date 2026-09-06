@@ -82,8 +82,22 @@ func isTextContent(data []byte) bool {
 		}
 	}
 
+	// A prefix sample may end in the middle of a multi-byte rune. If the
+	// sample fails UTF-8 validation, accept it only when trimming a valid
+	// partial rune prefix from the tail (<= 3 bytes) makes the rest valid.
 	if !utf8.Valid(data) {
-		return false
+		ok := false
+		n := len(data)
+		for cut := 0; cut <= 3 && n-cut > 0; cut++ {
+			head := data[:n-cut]
+			if utf8.Valid(head) {
+				ok = isPartialRunePrefix(data[n-cut:])
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
 	}
 
 	var suspicious int
@@ -95,6 +109,30 @@ func isTextContent(data []byte) bool {
 	}
 
 	return float64(suspicious)/float64(len(data)) <= maxNonTextRatio
+}
+
+// isPartialRunePrefix reports whether b is the leading bytes of a multi-byte
+// rune cut short by sampling (e.g. 0xE4 0xB8 for a truncated CJK character).
+func isPartialRunePrefix(b []byte) bool {
+	if len(b) == 0 || len(b) > 3 {
+		return false
+	}
+	if b[0] < 0xC0 || b[0] > 0xF4 {
+		return false
+	}
+	for i := 1; i < len(b); i++ {
+		if b[i]&0xC0 != 0x80 {
+			return false
+		}
+	}
+	need := 2
+	if b[0] >= 0xE0 {
+		need = 3
+	}
+	if b[0] >= 0xF0 {
+		need = 4
+	}
+	return need > len(b)
 }
 
 func isAllowedTextByte(b byte) bool {

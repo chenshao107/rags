@@ -3,6 +3,7 @@ package indexer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,15 @@ func TestIsTextContent(t *testing.T) {
 	}
 	if isTextContent([]byte{0xff, 0xfe, 0xfd}) {
 		t.Fatal("invalid UTF-8 should be binary")
+	}
+}
+
+func TestIsTextContentTruncatedMultibyteTail(t *testing.T) {
+	// 8192 % 3 != 0, so a sample of 3-byte CJK runes always ends mid-rune.
+	// The incomplete tail must not cause the sample to be judged binary.
+	data := []byte(strings.Repeat("三", 2731))[:textSampleSize]
+	if !isTextContent(data) {
+		t.Fatal("sample ending mid-rune should still be valid text")
 	}
 }
 
