@@ -9,14 +9,14 @@ import (
 )
 
 const unitTemplate = `[Unit]
-Description=Rags public search server (%i)
+Description=Rags public search server (%%i)
 After=network-online.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-ExecStart=%s serve --name %i
+ExecStart=%s serve --name %%i
 RuntimeDirectory=rags
 RuntimeDirectoryMode=0755
 Restart=on-failure
