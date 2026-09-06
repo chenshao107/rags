@@ -170,6 +170,13 @@ func isRetryableEmbedError(err error) bool {
 		case http.StatusTooManyRequests, http.StatusInternalServerError,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
+		case http.StatusBadRequest:
+			// SiliconFlow misreports transient overload as 400 code 20015
+			// ("The parameter is invalid") even for valid requests; replaying
+			// the identical body usually succeeds, so treat it as retryable.
+			body := strings.ToLower(httpErr.Body)
+			return strings.Contains(body, "20015") ||
+				strings.Contains(body, "parameter is invalid")
 		default:
 			return false
 		}
