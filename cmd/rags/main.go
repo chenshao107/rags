@@ -263,7 +263,7 @@ Examples:
 
 			// Create clients
 			vdb := vectordb.NewClient(settings.Qdrant.URL)
-			emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, config.EmbeddingVectorSize(settings.Embedding))
+			emb := embedder.NewClient(settings.Embedding.BaseURL, settings.Embedding.APIKey, settings.Embedding.Model, settings.Embedding.Dimensions)
 			idx := indexer.New(vdb, emb)
 
 			// Scan files
