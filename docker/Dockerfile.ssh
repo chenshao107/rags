@@ -24,6 +24,7 @@ RUN apk add --no-cache \
         openssh-server \
         ripgrep \
         shadow \
+        socat \
         tree \
     && addgroup -S knowledge \
     && adduser -S -D -h /home/knowledge -s /bin/bash -G knowledge knowledge \

@@ -22,5 +22,40 @@ services:
       - "${RAGS_PORT:-18787}:${RAGS_PORT:-18787}"
     restart: unless-stopped
 
+  ssh:
+    profiles:
+      - ssh
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ssh
+    depends_on:
+      - rags
+    working_dir: ${DOCS_PATH}
+    environment:
+      SSH_PASSWORD: ${RAGS_SSH_PASSWORD:-}
+      RAGS_PROXY_TARGET: host.docker.internal:${RAGS_PORT:-18787}
+    volumes:
+      - type: bind
+        source: ${DOCS_PATH}
+        target: ${DOCS_PATH}
+        read_only: true
+        bind:
+          create_host_path: false
+      - ssh_host_keys:/etc/ssh/host_keys
+    ports:
+      - "${RAGS_SSH_PORT:-2222}:22"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ssh_access
+    init: true
+    pids_limit: 256
+    mem_limit: 2g
+    restart: unless-stopped
+
 volumes:
   qdrant_data:
+  ssh_host_keys:
+
+networks:
+  ssh_access:

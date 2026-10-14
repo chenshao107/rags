@@ -15,6 +15,11 @@ esac
 
 printf 'knowledge:%s\n' "${SSH_PASSWORD}" | chpasswd
 
+: "${RAGS_PROXY_TARGET:=host.docker.internal:18787}"
+socat \
+    TCP4-LISTEN:18787,bind=127.0.0.1,reuseaddr,fork \
+    "TCP4:${RAGS_PROXY_TARGET}" &
+
 if [ ! -f /etc/ssh/host_keys/ssh_host_ed25519_key ]; then
     ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/host_keys/ssh_host_ed25519_key
 fi
