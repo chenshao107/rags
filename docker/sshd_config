@@ -1,0 +1,26 @@
+Port 22
+Protocol 2
+
+HostKey /etc/ssh/host_keys/ssh_host_ed25519_key
+HostKey /etc/ssh/host_keys/ssh_host_rsa_key
+
+PermitRootLogin no
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PubkeyAuthentication no
+AuthenticationMethods password
+StrictModes yes
+
+AllowUsers knowledge
+PermitEmptyPasswords no
+PermitUserEnvironment no
+AllowAgentForwarding no
+AllowTcpForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+
+PrintMotd no
+UseDNS no
+LogLevel INFO
+Subsystem sftp internal-sftp

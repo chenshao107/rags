@@ -1,0 +1,33 @@
+services:
+  # ssh 与 rags 共享网络命名空间，因此知识库现有配置中的
+  # http://127.0.0.1:18787 会直接连接 rags serve。
+  rags:
+    ports:
+      - "${RAGS_SSH_PORT:-2222}:22"
+
+  ssh:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ssh
+    network_mode: "service:rags"
+    depends_on:
+      - rags
+    working_dir: ${DOCS_PATH}
+    environment:
+      SSH_PASSWORD: ${RAGS_SSH_PASSWORD:?set RAGS_SSH_PASSWORD in docker/.env}
+    volumes:
+      # 容器内保留宿主机原路径，方便用户和 skill 使用同一套绝对路径。
+      - type: bind
+        source: ${DOCS_PATH}
+        target: ${DOCS_PATH}
+        read_only: true
+        bind:
+          create_host_path: false
+      - ssh_host_keys:/etc/ssh/host_keys
+    init: true
+    pids_limit: 256
+    mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  ssh_host_keys:
