@@ -32,7 +32,7 @@ services:
       - rags
     working_dir: ${DOCS_PATH}
     environment:
-      SSH_PASSWORD: ${RAGS_SSH_PASSWORD:-}
+      SSH_PASSWORD: ${RAGS_SSH_PASSWORD:-knowledge}
       RAGS_PROXY_TARGET: host.docker.internal:${RAGS_PORT:-18787}
     volumes:
       - type: bind
@@ -43,7 +43,7 @@ services:
           create_host_path: false
       - ssh_host_keys:/etc/ssh/host_keys
     ports:
-      - "${RAGS_SSH_PORT:-2222}:22"
+      - "${RAGS_SSH_PORT:-39222}:22"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

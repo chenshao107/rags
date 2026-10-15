@@ -11,9 +11,11 @@ SiliconFlow API Key；`rags grep` 通过现有的只读 `rags serve` 查询。
    ```dotenv
    DOCS_PATH=/disk4/PublicHttp/chenshaobin/textDoc
    COMPOSE_PROFILES=ssh
-   RAGS_SSH_PORT=2222
-   RAGS_SSH_PASSWORD=请替换为登录密码
+   RAGS_SSH_PORT=39222
+   RAGS_SSH_PASSWORD=knowledge
    ```
+
+默认用户名和密码均为 `knowledge`，可通过 `RAGS_SSH_PASSWORD` 修改密码。
 
 2. 构建并启动：
 
@@ -30,7 +32,7 @@ docker compose up -d
 ## 使用
 
 ```bash
-ssh -p 2222 knowledge@172.18.1.140
+ssh -p 39222 knowledge@172.18.1.140
 # 输入 .env 中的 RAGS_SSH_PASSWORD
 
 cd /disk4/PublicHttp/chenshaobin/textDoc

@@ -117,7 +117,49 @@ rags grep "OTA 分区"
 docker compose exec rags sh -c 'cd /data/docs && rags update'
 ```
 
-远程用户检索时，将 `.env` 中 `RAGS_PUBLIC_HOST` 设为服务器 IP。
+### SSH 只读访问
+
+需要让远程用户直接检索和阅读知识库时，在 `.env` 中启用 SSH：
+
+```dotenv
+COMPOSE_PROFILES=ssh
+RAGS_SSH_PORT=39222
+RAGS_SSH_PASSWORD=knowledge
+```
+
+```bash
+docker compose up -d --build
+ssh -p 39222 knowledge@服务器地址
+
+cd /path/to/chip/docs
+rags grep "BK7258 OTA 分区" -n 5
+```
+
+默认用户名和密码均为 `knowledge`。SSH 容器只读挂载文档，并将 `rags`
+查询转发给现有检索服务；具体配置见 `docker-compose.yml` 和
+`Dockerfile.ssh`。
+
+### Agent Skill 写法
+
+Skill 中写清连接信息、知识库根目录和检索规则即可，例如：
+
+```markdown
+---
+name: remote-rags
+description: 通过 SSH 检索远程只读知识库。
+---
+
+# 远程知识库
+
+- 地址：`服务器地址:39222`
+- 账号/密码：`knowledge/knowledge`
+- 根目录：`/path/to/chip/docs`
+- 优先进入相关子目录，再执行 `rags grep "问题" -n 5`
+- 可用 `rg`、`find` 和 `less` 精读；禁止执行 `rags update`
+- 首次连接可接受指纹；指纹变化时停止并联系维护者确认
+```
+
+更具体的命令和行为可按实际知识库补充，部署细节直接查看源码。
 
 ---
 
