@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,8 +19,8 @@ const (
 	PublicRunDir   = "/run/rags"
 	RootHome       = "/root"
 
-	DockerDocsRoot     = "/data/docs"
-	DockerSettingsDir  = "/etc/rags"
+	DockerDocsRoot    = "/data/docs"
+	DockerSettingsDir = "/etc/rags"
 )
 
 var publicNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -89,4 +90,41 @@ func BuildPublicMeta(name, repoRoot, docsRoot, collection, settingsDir, endpoint
 		meta.Service = PublicServiceName(name)
 	}
 	return meta
+}
+
+// DockerHostUpdateError tells a host-side command to update a Docker public
+// repository inside the container. Settings for that deploy live in the
+// container and are not on the host.
+type DockerHostUpdateError struct {
+	SettingsDir string
+	Cause       error
+}
+
+func (e *DockerHostUpdateError) Error() string {
+	dir := e.SettingsDir
+	if dir == "" {
+		dir = DockerSettingsDir
+	}
+	return fmt.Sprintf(`公共知识库由 Docker 部署，请在容器里更新索引，不要在宿主机执行 rags update。
+%s/%s 只在容器内由 docker-init 生成。
+
+  cd <rags仓库>/docker && ./update.sh
+
+(%v)`, dir, SettingsFile, e.Cause)
+}
+
+func (e *DockerHostUpdateError) Unwrap() error {
+	return e.Cause
+}
+
+// MissingDockerSettings wraps a missing settings file with update instructions.
+// Other errors are returned unchanged.
+func MissingDockerSettings(dir string, err error) error {
+	if err == nil || !os.IsNotExist(err) {
+		return err
+	}
+	if dir == "" {
+		dir = DockerSettingsDir
+	}
+	return &DockerHostUpdateError{SettingsDir: dir, Cause: err}
 }

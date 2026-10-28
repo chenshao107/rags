@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -243,6 +244,11 @@ Examples:
 
 			settings, err := loadSettingsForProject(pcfg)
 			if err != nil {
+				var dockerHint *config.DockerHostUpdateError
+				if errors.As(err, &dockerHint) {
+					cmd.SilenceUsage = true
+					return err
+				}
 				return fmt.Errorf("load settings: %w", err)
 			}
 
@@ -807,9 +813,18 @@ func loadSettingsForServe(pcfg config.ProjectConfig) (config.GlobalSettings, err
 		if err == nil && settings.Embedding.APIKey != "" {
 			return settings, nil
 		}
+		if pcfg.Public.Deploy == config.DeployDocker {
+			if hint := config.MissingDockerSettings(pcfg.Public.SettingsDir, err); hint != err {
+				return config.GlobalSettings{}, hint
+			}
+		}
 	}
 	if pcfg.Public != nil && pcfg.Public.Deploy == config.DeployDocker {
-		return config.LoadSettingsFromDir(config.DockerSettingsDir)
+		settings, err := config.LoadSettingsFromDir(config.DockerSettingsDir)
+		if hint := config.MissingDockerSettings(config.DockerSettingsDir, err); hint != err {
+			return config.GlobalSettings{}, hint
+		}
+		return settings, err
 	}
 	return config.LoadRootSettings()
 }
@@ -839,7 +854,11 @@ func loadSettingsForPublicInit() (config.GlobalSettings, error) {
 func loadSettingsForProject(pcfg config.ProjectConfig) (config.GlobalSettings, error) {
 	if pcfg.IsPublic() && pcfg.Public != nil {
 		if pcfg.Public.Deploy == config.DeployDocker && pcfg.Public.SettingsDir != "" {
-			return config.LoadSettingsFromDir(pcfg.Public.SettingsDir)
+			settings, err := config.LoadSettingsFromDir(pcfg.Public.SettingsDir)
+			if hint := config.MissingDockerSettings(pcfg.Public.SettingsDir, err); hint != err {
+				return config.GlobalSettings{}, hint
+			}
+			return settings, err
 		}
 		return config.LoadRootSettings()
 	}
