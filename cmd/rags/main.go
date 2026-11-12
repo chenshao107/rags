@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/chenshao/rags/internal/app"
+	"github.com/chenshao/rags/internal/bundle"
 	"github.com/chenshao/rags/internal/client"
 	"github.com/chenshao/rags/internal/config"
 	"github.com/chenshao/rags/internal/embedder"
@@ -40,6 +41,8 @@ to your project files. It uses:
   1. rags init        Create a .rags project (edit config, then rags update to index)
   2. rags grep "..."   Search with natural language
   3. rags update       Build or refresh the index after file or config changes
+  4. rags export       Pack the project directory and its index for another machine
+     rags import       Restore that directory, including .rags, without re-embedding
 
 == Project discovery & directory scope ==
 
@@ -72,6 +75,8 @@ to your project files. It uses:
 	root.AddCommand(filesCmd())
 	root.AddCommand(configCmd())
 	root.AddCommand(projectsCmd())
+	root.AddCommand(exportCmd())
+	root.AddCommand(importCmd())
 	root.AddCommand(serveCmd())
 	root.AddCommand(dockerInitCmd())
 
@@ -680,6 +685,152 @@ Examples:
 			return nil
 		},
 	}
+}
+
+func exportCmd() *cobra.Command {
+	var output string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Package this project's index for another machine",
+		Long: `Write a .ragsbundle for the project found from the current directory.
+
+The bundle is a complete copy of that directory: the original files, .rags
+(config and the file index), and the Qdrant snapshot. It does not contain
+API keys or this machine's absolute path. Import recreates the directory
+on another machine and does not call the embedding API.
+
+Every file under the project directory is packed, not only the embedded ones.
+Indexed files must still match .rags/state.json. Run rags update first if
+those files changed after the last index.
+
+The embedding model and vector size come from ~/.rags/settings.yaml and the
+live collection. The other machine must query with that same model.
+
+Examples:
+  rags export
+  rags export -o ~/backups/novel.ragsbundle
+  rags export -o ~/backups/novel.ragsbundle --force`,
+		Example: "  rags export -o novel.ragsbundle",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get current directory: %w", err)
+			}
+			projectRoot, _, err := resolveProjectContext(cwd)
+			if err != nil {
+				return err
+			}
+			pcfg, err := config.LoadProjectConfig(projectRoot)
+			if err != nil {
+				return fmt.Errorf("not a rags project (run 'rags init' first): %w", err)
+			}
+			if output == "" {
+				output = filepath.Join(cwd, bundle.DefaultBundleFile(pcfg.Name))
+			}
+
+			settings, err := config.LoadSettings()
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("no ~/.rags/settings.yaml; export records the embedding model from that file")
+				}
+				return fmt.Errorf("load settings: %w", err)
+			}
+			if settings.Qdrant.URL == "" {
+				settings.Qdrant.URL = config.DefaultSettings().Qdrant.URL
+			}
+
+			_, err = bundle.Export(vectordb.NewClient(settings.Qdrant.URL), settings, bundle.ExportOptions{
+				ProjectRoot: projectRoot,
+				OutputPath:  output,
+				Force:       force,
+				Stdout:      os.Stdout,
+			})
+			return err
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Bundle file to write (default: <project>.ragsbundle in the current directory)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite the output file if it already exists")
+	return cmd
+}
+
+func importCmd() *cobra.Command {
+	var dest string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "import BUNDLE",
+		Short: "Restore an exported index onto this machine",
+		Long: `Recreate a project directory from a .ragsbundle.
+
+The destination becomes a complete copy of the exported directory, including
+the original files and .rags. Qdrant vectors are uploaded unchanged. Relative
+file paths inside the index are not rewritten. The command does not call the
+embedding API.
+
+The destination defaults to the current directory. It is created when missing.
+An existing non-empty directory is left untouched unless --force is set.
+The directory can live at a different absolute path from the machine that
+exported the bundle. rags registers that new path and drops the old one, so
+a later rags update does not treat the old directory as deleted and remove
+the collection.
+
+Do not run rags init on the destination. Init would create an empty collection
+from the new path.
+
+~/.rags/settings.yaml must use the same embedding model and vector size as the
+bundle before rags grep. Query text is still embedded at search time. Pass
+--force to restore anyway when the local model does not match.
+
+Examples:
+  rags import novel.ragsbundle
+  rags import novel.ragsbundle --path /data/docs
+  rags import novel.ragsbundle --force`,
+		Example: "  rags import novel.ragsbundle",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+
+			if dest == "" {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("get current directory: %w", err)
+				}
+				dest = cwd
+			}
+
+			settings, err := config.LoadSettings()
+			settingsPresent := true
+			if err != nil {
+				if os.IsNotExist(err) {
+					settings = config.DefaultSettings()
+					settingsPresent = false
+				} else {
+					return fmt.Errorf("load settings: %w", err)
+				}
+			}
+			if settings.Qdrant.URL == "" {
+				settings.Qdrant.URL = config.DefaultSettings().Qdrant.URL
+			}
+
+			_, err = bundle.Import(vectordb.NewClient(settings.Qdrant.URL), settings, bundle.ImportOptions{
+				BundlePath:      args[0],
+				DestPath:        dest,
+				Force:           force,
+				SettingsPresent: settingsPresent,
+				Stdout:          os.Stdout,
+			})
+			return err
+		},
+	}
+
+	cmd.Flags().StringVar(&dest, "path", "", "Directory to recreate (default: current directory)")
+	cmd.Flags().BoolVar(&force, "force", false, "Replace an existing collection, .rags config, or registry name; allow an embedding model mismatch")
+	return cmd
 }
 
 func resolveProjectContext(cwd string) (projectRoot string, pathPrefix string, err error) {
